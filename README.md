@@ -1,10 +1,18 @@
 # Vision Transformers (ViT)
 
-A minimal PyTorch implementation of [Vision Transformers(ViT)](https://arxiv.org/pdf/2010.11929) and its varient [Data efficient Image Transformers (DeiT)](https://arxiv.org/pdf/2012.12877). Experimented with CIFAR-100 and Tiny-Imagenet datasets with a small ViT-T/8 and DeiT-T/8 (Tiny with patch size of 8) because of compute reasons, but supports other varients as well. Uses hydra for config and wandb for optional logging. Sidenote: There is also a minimal implemention of [Stochastic Depth Regularizer](https://arxiv.org/pdf/1603.09382) that is commonly used as ViTs as regulizer.
+A minimal PyTorch implementation of [Vision Transformers(ViT)](https://arxiv.org/pdf/2010.11929), its varients [Data efficient Image Transformers (DeiT)](https://arxiv.org/pdf/2012.12877) and [Swin Transformers](https://arxiv.org/pdf/2103.14030). Experimented with CIFAR-100 (ViT-T/8 vs DeiT-T/8) and Tiny-Imagenet dataset with a (ViT-T/8 vs Swin-T-TinyImageNet), but supports other varients as well.
 
-## CIFAR-100 Training Plots
+Architectural correctness is tested via parameter counts and output parity, matched against torchvision implementations (with exceptions for Swin due to differing internal choices).
 
-![CIFAR-100 Train Plots](https://raw.githubusercontent.com/mnjm/vision-transformers/refs/heads/assets/train-plots.png)
+Configuration is managed using Hydra, with optional experiment tracking via Weights & Biases (wandb).
+
+## ViT-T/8 vs DeiT-T/8 on CIFAR-100
+
+![CIFAR-100 Plots](https://raw.githubusercontent.com/mnjm/vision-transformers/refs/heads/assets/train-plots.png)
+
+## ViT-B/8 vs Swin-T-TinyImageNet on TinyImageNet
+
+![Tiny Image Net Plots](https://raw.githubusercontent.com/mnjm/vision-transformers/refs/heads/assets/train-plots-tiny-imagenet.png)
 
 ## Setup
 
@@ -31,5 +39,44 @@ Uses frozen `resnet18_cifar100` (via timm) as Teacher and is used for hard disti
 ### Train ViT-T/8 on Tiny-Imagenet
 
 ```bash
-uv run train.py
+uv run train.py +run=vit-tiny-imagenet
+```
+
+### Train Swin-T on Tiny-Imagenet
+
+```bash
+uv run train.py +run=swin-tiny-imagenet
+```
+
+## Structure
+
+```
+.
+├── config/
+│   ├── dataset/        # Dataset configs
+│   ├── model/          # Model configs (ViT / DeiT / Swin)
+│   ├── run/            # Experiment presets
+│   └── default.yaml    # Global defaults
+├── model/              # Model implementations
+├── data.py             # Dataset & dataloaders
+├── train.py            # Training entry point
+├── utils.py            # Training utilities
+└── tests/              # Architecture & parity tests
+
+````
+
+## Configuration
+
+* Explicit configs over implicit defaults
+* Modular overrides:
+  * `dataset`
+  * `model`
+  * `optimizer`
+  * `lr_scheduler`
+* Experiment outputs are auto-versioned and logged.
+
+Example override:
+
+```bash
+python train.py model=ViT-B-16 dataset=cifar100
 ```
