@@ -12,6 +12,7 @@ from einops.layers.torch import Rearrange
 from hydra.utils import instantiate
 from omegaconf import DictConfig
 
+
 @dataclass
 class ViTConfig:
     """Configuration container for Vision Transformer.
@@ -30,6 +31,7 @@ class ViTConfig:
         attn_drop_rate: Attention dropout rate.
         stoch_depth_drop_rate: Stochastic depth rate.
     """
+
     name: str = "ViT-B-16"
     img_size: int = 224
     patch_size: int = 16
@@ -39,21 +41,36 @@ class ViTConfig:
     n_heads: int = 12
     n_embd: int = 768
     mlp_dim: int = 3_072
-    drop_rate: float = 0.
-    attn_drop_rate: float = 0.
-    stoch_depth_drop_rate: float = 0.
+    drop_rate: float = 0.0
+    attn_drop_rate: float = 0.0
+    stoch_depth_drop_rate: float = 0.0
 
     @property
     def num_patches(self) -> int:
+        """Return the number of image patches implied by the config.
+
+        Returns:
+            int: Total number of non-overlapping patches per image.
+        """
         return (self.img_size // self.patch_size) ** 2
+
 
 class PatchEmbed(nn.Module):
     """Image to patch embedding module."""
 
     def __init__(
-            self, img_size: int, patch_size: int, in_dim: int, out_dim: int,
-            norm_lyr: type[nn.Module] | None = nn.Identity
-        ):
+        self,
+        img_size: int,
+        patch_size: int,
+        in_dim: int,
+        out_dim: int,
+        norm_lyr: type[nn.Module] | None = nn.Identity,
+    ):
+        """Initialize the patch embedding projection.
+
+        Returns:
+            None: This initializer does not return a value.
+        """
         super().__init__()
         assert img_size % patch_size == 0, f"{patch_size=} must evenly divide {img_size=}"
         self.proj = nn.Conv2d(in_dim, out_dim, kernel_size=patch_size, stride=patch_size, bias=True)
@@ -62,15 +79,33 @@ class PatchEmbed(nn.Module):
         self.norm = norm_factory(out_dim)
 
     def forward(self, x):
-        x = self.proj(x) # (B, n_embd, H/patch_size, W/patch_size)
-        x = self.re(x) # (B, n_patches, n_embed)
+        """Project an image batch into patch tokens.
+
+        Returns:
+            torch.Tensor: Patch embeddings with shape ``(B, num_patches, out_dim)``.
+        """
+        x = self.proj(x)  # (B, n_embd, H/patch_size, W/patch_size)
+        x = self.re(x)  # (B, n_patches, n_embed)
         x = self.norm(x)
         return x
+
 
 class MLP(nn.Module):
     """Transformer MLP block."""
 
-    def __init__(self, in_features: int, hidden_features: int, out_features: int, act_fn: type[nn.Module]=nn.GELU, drop_rate: float=.0):
+    def __init__(
+        self,
+        in_features: int,
+        hidden_features: int,
+        out_features: int,
+        act_fn: type[nn.Module] = nn.GELU,
+        drop_rate: float = 0.0,
+    ):
+        """Initialize the two-layer feed-forward block.
+
+        Returns:
+            None: This initializer does not return a value.
+        """
         super().__init__()
         self.fc1 = nn.Linear(in_features, hidden_features)
         self.act = act_fn()
@@ -78,6 +113,11 @@ class MLP(nn.Module):
         self.drop = nn.Dropout(drop_rate)
 
     def forward(self, x):
+        """Apply the feed-forward block to token embeddings.
+
+        Returns:
+            torch.Tensor: Transformed token embeddings.
+        """
         x = self.fc1(x)
         x = self.act(x)
         x = self.drop(x)
@@ -85,19 +125,32 @@ class MLP(nn.Module):
         x = self.drop(x)
         return x
 
+
 class MultiHeadSelfAttention(nn.Module):
     """Multi-head self-attention. Uses SDPA with optional fallback"""
 
-    def __init__(self, dim: int, n_heads: int, attn_drop_rate: float=.0, proj_drop_rate: float=.0, use_sdpa_attn: bool=True):
+    def __init__(
+        self,
+        dim: int,
+        n_heads: int,
+        attn_drop_rate: float = 0.0,
+        proj_drop_rate: float = 0.0,
+        use_sdpa_attn: bool = True,
+    ):
+        """Initialize the self-attention projection stack.
+
+        Returns:
+            None: This initializer does not return a value.
+        """
         super().__init__()
         assert dim % n_heads == 0
         self.n_heads = n_heads
         head_dim = dim // n_heads
-        self.use_sdpa_attn = use_sdpa_attn and hasattr(F, 'scaled_dot_product_attention')
+        self.use_sdpa_attn = use_sdpa_attn and hasattr(F, "scaled_dot_product_attention")
         if use_sdpa_attn and not self.use_sdpa_attn:
             warnings.warn("SDPA attn is enabled but not available.")
         self.attn_drop_rate = attn_drop_rate
-        self.scale = head_dim ** -0.5
+        self.scale = head_dim**-0.5
         if not self.use_sdpa_attn:
             self.attn_drop = nn.Dropout(attn_drop_rate)
         self.qkv = nn.Linear(dim, dim * 3)
@@ -107,6 +160,11 @@ class MultiHeadSelfAttention(nn.Module):
         self.proj_drop = nn.Dropout(proj_drop_rate)
 
     def forward(self, x):
+        """Apply self-attention over the token sequence.
+
+        Returns:
+            torch.Tensor: Attention output with the same shape as ``x``.
+        """
         q, k, v = self.split_qkv(self.qkv(x))
         if self.use_sdpa_attn:
             drop_p = self.attn_drop_rate if self.training else 0.0
@@ -121,34 +179,66 @@ class MultiHeadSelfAttention(nn.Module):
         x = self.proj_drop(x)
         return x
 
+
 class StochDepthDrop(nn.Module):
     """
     Stoch. Depth, a regularization method used in training residual networks, drops entire residual blocks during training.
     Paper: https://arxiv.org/pdf/1603.09382
     """
+
     def __init__(self, drop_prob: float):
+        """Initialize the stochastic depth module.
+
+        Returns:
+            None: This initializer does not return a value.
+        """
         super().__init__()
         self.drop_prob = drop_prob
 
     def forward(self, x):
+        """Randomly drop residual branches during training.
+
+        Returns:
+            torch.Tensor: Input tensor after stochastic depth masking.
+        """
         drop_prob = self.drop_prob
-        if drop_prob == 0. or not self.training:
+        if drop_prob == 0.0 or not self.training:
             return x
         shape = (x.shape[0],) + (1,) * (x.ndim - 1)
         random = torch.rand(shape, dtype=x.dtype, device=x.device)
         mask = (random > drop_prob).float()
-        out = x * mask / (1. - drop_prob)
+        out = x * mask / (1.0 - drop_prob)
         return out
 
+
 class Block(nn.Module):
+    """Transformer encoder block with attention and MLP sublayers."""
 
     def __init__(
-            self, dim: int, n_heads: int, mlp_dim: int, attn_drop_rate: float, proj_drop_rate: float,
-            drop_path_prob: float, use_sdpa_attn: bool=True, mlp_drop_rate: float | None = None
-        ):
+        self,
+        dim: int,
+        n_heads: int,
+        mlp_dim: int,
+        attn_drop_rate: float,
+        proj_drop_rate: float,
+        drop_path_prob: float,
+        use_sdpa_attn: bool = True,
+        mlp_drop_rate: float | None = None,
+    ):
+        """Initialize the encoder block.
+
+        Returns:
+            None: This initializer does not return a value.
+        """
         super().__init__()
         self.norm1 = nn.LayerNorm(dim)
-        self.attn = MultiHeadSelfAttention(dim=dim, n_heads=n_heads, attn_drop_rate=attn_drop_rate, proj_drop_rate=proj_drop_rate, use_sdpa_attn=use_sdpa_attn)
+        self.attn = MultiHeadSelfAttention(
+            dim=dim,
+            n_heads=n_heads,
+            attn_drop_rate=attn_drop_rate,
+            proj_drop_rate=proj_drop_rate,
+            use_sdpa_attn=use_sdpa_attn,
+        )
         self.norm2 = nn.LayerNorm(dim)
         mlp_drop_rate = proj_drop_rate if mlp_drop_rate is None else mlp_drop_rate
         self.mlp = MLP(dim, mlp_dim, dim, drop_rate=mlp_drop_rate)
@@ -156,13 +246,29 @@ class Block(nn.Module):
         self.drop_path_mlp = StochDepthDrop(drop_path_prob)
 
     def forward(self, x):
-        x = x + self.drop_path_attn(self.attn(self.norm1(x))) # residual with stocastic drop path regularizer
-        x = x + self.drop_path_mlp(self.mlp(self.norm2(x))) # residual with stocastic drop path regularizer
+        """Run one transformer block over the token sequence.
+
+        Returns:
+            torch.Tensor: Updated token embeddings.
+        """
+        x = x + self.drop_path_attn(
+            self.attn(self.norm1(x))
+        )  # residual with stocastic drop path regularizer
+        x = x + self.drop_path_mlp(
+            self.mlp(self.norm2(x))
+        )  # residual with stocastic drop path regularizer
         return x
 
-class ViT(nn.Module):
 
-    def __init__(self, cfg:  ViTConfig, use_sdpa_attn: bool=True):
+class ViT(nn.Module):
+    """Vision Transformer classifier."""
+
+    def __init__(self, cfg: ViTConfig, use_sdpa_attn: bool = True):
+        """Initialize the ViT backbone and classification head.
+
+        Returns:
+            None: This initializer does not return a value.
+        """
         super().__init__()
         self.cfg = cfg
         L = cfg.n_layer
@@ -172,12 +278,15 @@ class ViT(nn.Module):
         self.pos_drop = nn.Dropout(cfg.drop_rate)
         self.blocks = nn.ModuleList(
             Block(
-                dim=cfg.n_embd, n_heads=cfg.n_heads, mlp_dim=cfg.mlp_dim,
-                attn_drop_rate=cfg.attn_drop_rate, proj_drop_rate=cfg.drop_rate,
+                dim=cfg.n_embd,
+                n_heads=cfg.n_heads,
+                mlp_dim=cfg.mlp_dim,
+                attn_drop_rate=cfg.attn_drop_rate,
+                proj_drop_rate=cfg.drop_rate,
                 drop_path_prob=(l + 1) / L * cfg.stoch_depth_drop_rate,
                 use_sdpa_attn=use_sdpa_attn,
             )
-            for l in range(L) # noqa: E741
+            for l in range(L)  # noqa: E741
         )
         self.norm = nn.LayerNorm(cfg.n_embd)
         self.head = nn.Linear(cfg.n_embd, cfg.n_class)
@@ -189,6 +298,11 @@ class ViT(nn.Module):
 
     @staticmethod
     def _init_weights(m):
+        """Initialize supported module weights in place.
+
+        Returns:
+            None: Mutates the provided module parameters.
+        """
         if isinstance(m, nn.Linear):
             nn.init.trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
@@ -198,14 +312,24 @@ class ViT(nn.Module):
             nn.init.ones_(m.weight)
 
     def loss_fn(self, pred, lbls):
+        """Compute the classification loss for a batch.
+
+        Returns:
+            torch.Tensor: Scalar cross-entropy loss.
+        """
         loss = F.cross_entropy(pred, lbls)
         return loss
 
     def forward(self, imgs, lbls=None):
+        """Run the model and optionally compute loss.
+
+        Returns:
+            torch.Tensor | tuple[torch.Tensor, torch.Tensor]: Logits, or logits with loss when labels are provided.
+        """
         B = imgs.shape[0]
-        x = self.patch_embed(imgs)                         # (B,num_patches,n_embd)
-        cls_tokens = self.cls_token.expand(B, -1, -1)      # (B,1,n_embd)
-        x = torch.cat((cls_tokens, x), dim=1)              # prepend [CLS]
+        x = self.patch_embed(imgs)  # (B,num_patches,n_embd)
+        cls_tokens = self.cls_token.expand(B, -1, -1)  # (B,1,n_embd)
+        x = torch.cat((cls_tokens, x), dim=1)  # prepend [CLS]
         x = x + self.pos_embed
         x = self.pos_drop(x)
 
@@ -213,29 +337,42 @@ class ViT(nn.Module):
             x = blk(x)
 
         x = self.norm(x)
-        cls_out = x[:, 0] # take [CLS]
-        logits = self.head(cls_out) # (B, num_classes)
+        cls_out = x[:, 0]  # take [CLS]
+        logits = self.head(cls_out)  # (B, num_classes)
         if lbls is not None:
             loss = self.loss_fn(logits, lbls)
             return logits, loss
         return logits
 
     def configure_optimizer(self, optim_cfg: DictConfig, device: torch.device):
+        """Create the optimizer configured for this model.
+
+        Returns:
+            torch.optim.Optimizer: Optimizer instance with decay groups applied.
+        """
         return _configure_optimizer(self, optim_cfg, device)
 
+
 def _configure_optimizer(model: nn.Module, optim_cfg: DictConfig, device: torch.device):
+    """Build optimizer parameter groups with weight-decay filtering.
+
+    Returns:
+        torch.optim.Optimizer: Instantiated optimizer for the model parameters.
+    """
     optim_cfg["fused"] = bool(optim_cfg.get("fused", False)) and device.type == "cuda"
-    params_dict = { pn: p for pn, p in model.named_parameters() }
-    params_dict = { pn:p for pn, p in params_dict.items() if p.requires_grad } # filter params that requires grad
+    params_dict = {pn: p for pn, p in model.named_parameters()}
+    params_dict = {
+        pn: p for pn, p in params_dict.items() if p.requires_grad
+    }  # filter params that requires grad
     # create optim groups of any params that is 2D or more. This group will be weight decayed ie weight tensors in Linear and embeddings
-    decay_params = [ p for p in params_dict.values() if p.dim() >= 2]
+    decay_params = [p for p in params_dict.values() if p.dim() >= 2]
     # create optim groups of any params that is 1D. All biases and layernorm params
-    no_decay_params = [ p for p in params_dict.values() if p.dim() < 2]
+    no_decay_params = [p for p in params_dict.values() if p.dim() < 2]
     weight_decay = float(optim_cfg.get("weight_decay", 0.0))
-    optim_cfg["weight_decay"] = .0
+    optim_cfg["weight_decay"] = 0.0
     optim_groups = [
-        { 'params': decay_params, 'weight_decay': weight_decay },
-        { 'params': no_decay_params, 'weight_decay': 0.0 },
+        {"params": decay_params, "weight_decay": weight_decay},
+        {"params": no_decay_params, "weight_decay": 0.0},
     ]
     optimizer = instantiate(optim_cfg, params=optim_groups, _convert_="all")
     return optimizer

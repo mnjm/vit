@@ -1,3 +1,5 @@
+"""Regression tests for the local Vision Transformer implementation."""
+
 from model.vit import ViTConfig, ViT
 import pytest
 from torchvision import models
@@ -6,22 +8,34 @@ from pathlib import Path
 import torch
 
 model_map = {
-    'ViT-B-16': models.vit_b_16,
-    'ViT-B-32': models.vit_b_32,
-    'ViT-L-16': models.vit_l_16,
-    'ViT-L-32': models.vit_l_32,
-    'ViT-H-14': models.vit_h_14,
+    "ViT-B-16": models.vit_b_16,
+    "ViT-B-32": models.vit_b_32,
+    "ViT-L-16": models.vit_l_16,
+    "ViT-L-32": models.vit_l_32,
+    "ViT-H-14": models.vit_h_14,
 }
-yml_files = [ Path("./config/model") / f"{name}.yaml" for name in model_map.keys() ]
+yml_files = [Path("./config/model") / f"{name}.yaml" for name in model_map.keys()]
+
 
 def test_vit_output_format():
+    """Verify the ViT forward pass returns class logits.
+
+    Returns:
+        None: Asserts on the model output shape.
+    """
     cfg = ViTConfig()
     my_model = ViT(cfg)
     dummy = torch.randn(2, 3, cfg.img_size, cfg.img_size)
     out = my_model(dummy)
     assert out.shape == (2, 1000), f"Output mismatch {out.shape}"
 
+
 def test_param_count_vit():
+    """Check that parameter counts match torchvision reference models.
+
+    Returns:
+        None: Asserts parity for each configured model variant.
+    """
     # Test all available vit models from `torchvision.models`
     for yml_file in yml_files:
         cfg = OmegaConf.load(yml_file)
@@ -38,7 +52,13 @@ def test_param_count_vit():
         my_params = sum(p.numel() for p in my_model.parameters())
         assert pt_params == my_params, f"{name} params mismatch {pt_params=} {my_params=}"
 
+
 def load_weights_from_tv(my_model, tv_model):
+    """Copy torchvision ViT weights into the local implementation.
+
+    Returns:
+        None: Updates ``my_model`` parameters in place.
+    """
     my_model.patch_embed.proj.weight.copy_(tv_model.conv_proj.weight)
     my_model.patch_embed.proj.bias.copy_(tv_model.conv_proj.bias)
 
@@ -70,8 +90,14 @@ def load_weights_from_tv(my_model, tv_model):
     my_model.head.weight.copy_(tv_model.heads.head.weight)
     my_model.head.bias.copy_(tv_model.heads.head.bias)
 
+
 @torch.no_grad()
 def test_bit_match_output_with_tv():
+    """Verify output parity after copying torchvision weights.
+
+    Returns:
+        None: Asserts the outputs match within tolerance.
+    """
     for yml_file in yml_files:
         cfg = OmegaConf.load(yml_file)
         cfg.img_size = 224

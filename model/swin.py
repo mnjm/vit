@@ -1,7 +1,5 @@
-"""
-Minimal Swin Transformer implementation in PyTorch.
-Ref: https://github.com/microsoft/Swin-Transformer/blob/main/models/swin_transformer.py
-"""
+"""Swin Transformer building blocks and classifier implementation."""
+
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from omegaconf import DictConfig
@@ -14,6 +12,7 @@ from einops.layers.torch import Rearrange
 from .vit import MLP, PatchEmbed, StochDepthDrop, _configure_optimizer
 
 type Size2D = tuple[int, int]
+
 
 @dataclass
 class SwinTransformerConfig:
@@ -35,6 +34,7 @@ class SwinTransformerConfig:
         attn_drop_rate: Attention dropout rate.
         stoch_depth_drop_rate: Stochastic depth rate.
     """
+
     name: str = "Swin-T"
     img_size: int = 224
     patch_size: int = 4
@@ -45,16 +45,23 @@ class SwinTransformerConfig:
     depths: list[int] = field(default_factory=lambda: [2, 2, 6, 2])
     n_heads: list[int] = field(default_factory=lambda: [3, 6, 12, 24])
     window_size: int = 7
-    mlp_ratio: float = 4.
-    drop_rate: float = 0.
-    attn_drop_rate: float = 0.
-    stoch_depth_drop_rate: float = 0.
+    mlp_ratio: float = 4.0
+    drop_rate: float = 0.0
+    attn_drop_rate: float = 0.0
+    stoch_depth_drop_rate: float = 0.0
+
 
 def to_2tuple(x: int | Sequence[int]) -> Size2D:
+    """Normalize an integer or length-2 sequence to a 2D tuple.
+
+    Returns:
+        Size2D: Two-element size tuple.
+    """
     if isinstance(x, Sequence):
         assert len(x) == 2, f"Expected a pair, got {x}"
         return int(x[0]), int(x[1])
     return x, x
+
 
 def window_partition(x: torch.Tensor, window_size: int | Size2D) -> torch.Tensor:
     """Partition feature map into non-overlapping windows.
@@ -70,12 +77,14 @@ def window_partition(x: torch.Tensor, window_size: int | Size2D) -> torch.Tensor
     wsh, wsw = to_2tuple(window_size)
     nh, nw = H // wsh, W // wsw
     windows = rearrange(
-        x, "b (nh ws1) (nw ws2) c -> (b nh nw) ws1 ws2 c",
-        ws1=wsh, ws2=wsw, nh=nh, nw=nw
+        x, "b (nh ws1) (nw ws2) c -> (b nh nw) ws1 ws2 c", ws1=wsh, ws2=wsw, nh=nh, nw=nw
     )
     return windows
 
-def window_reverse(windows: torch.Tensor, window_size: int | Size2D, H: int, W: int) -> torch.Tensor:
+
+def window_reverse(
+    windows: torch.Tensor, window_size: int | Size2D, H: int, W: int
+) -> torch.Tensor:
     """Reconstruct feature map from windows.
 
     Args:
@@ -91,18 +100,23 @@ def window_reverse(windows: torch.Tensor, window_size: int | Size2D, H: int, W: 
     nh, nw = H // wsh, W // wsw
     B = windows.shape[0] // (nh * nw)
     x = rearrange(
-        windows, "(b nh nw) ws1 ws2 c -> b (nh ws1) (nw ws2) c",
-        ws1=wsh, ws2=wsw, nh=nh, nw=nw, b=B
+        windows, "(b nh nw) ws1 ws2 c -> b (nh ws1) (nw ws2) c", ws1=wsh, ws2=wsw, nh=nh, nw=nw, b=B
     )
     return x
+
 
 class ShiftedWindowMHSA(nn.Module):
     """Window-based multi-head self-attention with relative position bias."""
 
     def __init__(
-            self, dim: int, window_size: int | Size2D, n_heads: int, attn_drop_rate: float = .0,
-            proj_drop_rate: float = .0, use_sdpa_attn: bool = True
-        ):
+        self,
+        dim: int,
+        window_size: int | Size2D,
+        n_heads: int,
+        attn_drop_rate: float = 0.0,
+        proj_drop_rate: float = 0.0,
+        use_sdpa_attn: bool = True,
+    ):
         """
         Args:
             dim: Embedding dimension.
@@ -111,6 +125,9 @@ class ShiftedWindowMHSA(nn.Module):
             attn_drop_rate: Attention dropout.
             proj_drop_rate: Projection dropout.
             use_sdpa_attn: Use SDPA attention.
+
+        Returns:
+            None: This initializer does not return a value.
         """
         super().__init__()
         self.dim = dim
@@ -125,30 +142,30 @@ class ShiftedWindowMHSA(nn.Module):
 
         coords_h = torch.arange(self.window_size[0])
         coords_w = torch.arange(self.window_size[1])
-        coords = torch.stack(torch.meshgrid([coords_h, coords_w], indexing='ij'))  # 2, Wh, Ww
+        coords = torch.stack(torch.meshgrid([coords_h, coords_w], indexing="ij"))  # 2, Wh, Ww
         coords_flatten = torch.flatten(coords, 1)  # 2, Wh*Ww
         relative_coords = coords_flatten[:, :, None] - coords_flatten[:, None, :]  # 2, Wh*Ww, Wh*Ww
         relative_coords = relative_coords.permute(1, 2, 0).contiguous()  # Wh*Ww, Wh*Ww, 2
         relative_coords[:, :, 0] += self.window_size[0] - 1  # shift to start from 0
         relative_coords[:, :, 1] += self.window_size[1] - 1
-        relative_coords[:, :, 0] *= 2 * self.window_size[1] - 1 # 2d coords to 1d
+        relative_coords[:, :, 0] *= 2 * self.window_size[1] - 1  # 2d coords to 1d
         relative_position_index = relative_coords.sum(-1)  # Wh*Ww, Wh*Ww
         self.relative_position_index: torch.Tensor
         self.register_buffer("relative_position_index", relative_position_index)
 
         self.split_qkv = Rearrange("b n (t h d) -> t b h n d", t=3, h=n_heads, d=self.head_dim)
         self.qkv = nn.Linear(dim, dim * 3)
-        self.use_sdpa_attn = use_sdpa_attn and hasattr(F, 'scaled_dot_product_attention')
+        self.use_sdpa_attn = use_sdpa_attn and hasattr(F, "scaled_dot_product_attention")
         if use_sdpa_attn and not self.use_sdpa_attn:
             warnings.warn("SDPA attn is enabled but not available.")
         self.merge_heads = Rearrange("b h n d -> b n (h d)")
 
         self.attn_drop_rate = attn_drop_rate
-        self.scale = self.head_dim ** -0.5
+        self.scale = self.head_dim**-0.5
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop_rate)
 
-        nn.init.trunc_normal_(self.relative_position_bias_table, std=.02)
+        nn.init.trunc_normal_(self.relative_position_bias_table, std=0.02)
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
         """
@@ -168,11 +185,15 @@ class ShiftedWindowMHSA(nn.Module):
             0,
             torch.reshape(self.relative_position_index, (-1,)),
         )
-        rel_pos_bias = rel_pos_bias.view(
-            self.window_size[0] * self.window_size[1],
-            self.window_size[0] * self.window_size[1],
-            -1
-        ).permute(2, 0, 1).unsqueeze(0)
+        rel_pos_bias = (
+            rel_pos_bias.view(
+                self.window_size[0] * self.window_size[1],
+                self.window_size[0] * self.window_size[1],
+                -1,
+            )
+            .permute(2, 0, 1)
+            .unsqueeze(0)
+        )
 
         windows_per_img = mask.shape[0] if mask is not None else 0
         full_mask = rel_pos_bias
@@ -185,14 +206,16 @@ class ShiftedWindowMHSA(nn.Module):
 
         if self.use_sdpa_attn:
             x = F.scaled_dot_product_attention(
-                q, k, v,
+                q,
+                k,
+                v,
                 attn_mask=full_mask,
                 dropout_p=self.attn_drop_rate if self.training else 0.0,
                 scale=self.scale,
             )
         else:
             q = q * self.scale
-            attn = (q @ k.transpose(-2, -1))
+            attn = q @ k.transpose(-2, -1)
             attn = attn + full_mask
             attn = attn.softmax(dim=-1)
             attn = F.dropout(attn, self.attn_drop_rate, training=self.training)
@@ -204,15 +227,25 @@ class ShiftedWindowMHSA(nn.Module):
 
         return x
 
+
 class SwinTransformerBlock(nn.Module):
     """Swin Transformer block with optional window shift."""
 
     def __init__(
-            self, dim: int, input_res: int | Size2D, n_heads: int, window_size: int | Size2D,
-            shift_size: int, mlp_ratio: float, attn_drop_rate: float, proj_drop_rate: float,
-            path_drop_rate: float, act_layer: type[nn.Module] = nn.GELU,
-            norm_layer: type[nn.Module] = nn.LayerNorm, use_sdpa_attn: bool =True
-        ):
+        self,
+        dim: int,
+        input_res: int | Size2D,
+        n_heads: int,
+        window_size: int | Size2D,
+        shift_size: int,
+        mlp_ratio: float,
+        attn_drop_rate: float,
+        proj_drop_rate: float,
+        path_drop_rate: float,
+        act_layer: type[nn.Module] = nn.GELU,
+        norm_layer: type[nn.Module] = nn.LayerNorm,
+        use_sdpa_attn: bool = True,
+    ):
         """
         Args:
             dim: Embedding dimension.
@@ -224,6 +257,9 @@ class SwinTransformerBlock(nn.Module):
             attn_drop_rate: Attention dropout.
             proj_drop_rate: Projection dropout.
             path_drop_rate: Drop path rate.
+
+        Returns:
+            None: This initializer does not return a value.
         """
         super().__init__()
         self.dim = dim
@@ -237,42 +273,59 @@ class SwinTransformerBlock(nn.Module):
             self.shift_size = 0
             self.window_size = self.input_res
 
-        assert 0 <= self.shift_size <= min(self.window_size), "shift size should be within 0 - window_size"
+        assert 0 <= self.shift_size <= min(self.window_size), (
+            "shift size should be within 0 - window_size"
+        )
 
         self.attn_norm = norm_layer(dim)
         self.attn = ShiftedWindowMHSA(
-            dim=self.dim, window_size=self.window_size, n_heads=self.n_heads, attn_drop_rate=attn_drop_rate,
-            proj_drop_rate=proj_drop_rate, use_sdpa_attn=use_sdpa_attn
+            dim=self.dim,
+            window_size=self.window_size,
+            n_heads=self.n_heads,
+            attn_drop_rate=attn_drop_rate,
+            proj_drop_rate=proj_drop_rate,
+            use_sdpa_attn=use_sdpa_attn,
         )
 
         self.drop_path = StochDepthDrop(drop_prob=path_drop_rate)
 
         self.mlp_norm = norm_layer(dim)
         self.mlp = MLP(
-            in_features=self.dim, hidden_features=int(self.dim * mlp_ratio), out_features=self.dim,
-            act_fn=act_layer, drop_rate=proj_drop_rate
+            in_features=self.dim,
+            hidden_features=int(self.dim * mlp_ratio),
+            out_features=self.dim,
+            act_fn=act_layer,
+            drop_rate=proj_drop_rate,
         )
 
         if self.shift_size > 0:
             # calculate attention mask for SW-MSA
             H, W = self.input_res
             img_mask = torch.zeros((1, H, W, 1))  # 1 H W 1
-            h_slices = (slice(0, -self.window_size[0]),
-                        slice(-self.window_size[0], -self.shift_size),
-                        slice(-self.shift_size, None))
-            w_slices = (slice(0, -self.window_size[1]),
-                        slice(-self.window_size[1], -self.shift_size),
-                        slice(-self.shift_size, None))
+            h_slices = (
+                slice(0, -self.window_size[0]),
+                slice(-self.window_size[0], -self.shift_size),
+                slice(-self.shift_size, None),
+            )
+            w_slices = (
+                slice(0, -self.window_size[1]),
+                slice(-self.window_size[1], -self.shift_size),
+                slice(-self.shift_size, None),
+            )
             cnt = 0
             for h in h_slices:
                 for w in w_slices:
                     img_mask[:, h, w, :] = cnt
                     cnt += 1
 
-            mask_windows = window_partition(img_mask, self.window_size)  # nW, window_size, window_size, 1
+            mask_windows = window_partition(
+                img_mask, self.window_size
+            )  # nW, window_size, window_size, 1
             mask_windows = mask_windows.view(-1, self.window_size[0] * self.window_size[1])
             attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
-            attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(attn_mask == 0, float(0.0))
+            attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(
+                attn_mask == 0, float(0.0)
+            )
         else:
             attn_mask = None
 
@@ -296,20 +349,22 @@ class SwinTransformerBlock(nn.Module):
         x = x.view(B, H, W, C)
 
         if self.shift_size > 0:
-            shifted_x = torch.roll(x, shifts=(-self.shift_size, -self.shift_size), dims=(1,2))
+            shifted_x = torch.roll(x, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2))
         else:
             shifted_x = x
-        x_windowed = window_partition(shifted_x, self.window_size) # nW * B, wsh, wsw, C
+        x_windowed = window_partition(shifted_x, self.window_size)  # nW * B, wsh, wsw, C
 
         x_windowed = x_windowed.view(-1, self.window_size[0] * self.window_size[1], C)
 
-        attn = self.attn(x_windowed, mask=self.attn_mask) # nW * B, wsh * wsw, C
+        attn = self.attn(x_windowed, mask=self.attn_mask)  # nW * B, wsh * wsw, C
 
         attn = attn.view(-1, self.window_size[0], self.window_size[1], C)
 
-        shifted_x = window_reverse(attn, self.window_size, H, W) # B, n_h_win * wsh, n_w_win * wsw, C
+        shifted_x = window_reverse(
+            attn, self.window_size, H, W
+        )  # B, n_h_win * wsh, n_w_win * wsw, C
         if self.shift_size > 0:
-            x = torch.roll(shifted_x, shifts=(self.shift_size, self.shift_size), dims=(1,2))
+            x = torch.roll(shifted_x, shifts=(self.shift_size, self.shift_size), dims=(1, 2))
         else:
             x = shifted_x
 
@@ -318,6 +373,7 @@ class SwinTransformerBlock(nn.Module):
         x = x + self.drop_path(self.mlp(self.mlp_norm(x)))
 
         return x
+
 
 class PatchMerge(nn.Module):
     """Patch merging layer (downsampling)."""
@@ -328,13 +384,16 @@ class PatchMerge(nn.Module):
             dim: Input embedding dim.
             input_res: Input resolution.
             norm_lyr: Normalization layer after projection
+
+        Returns:
+            None: This initializer does not return a value.
         """
         super().__init__()
         self.dim = dim
         self.input_res = to_2tuple(input_res)
         H, W = self.input_res
         assert H % 2 == 0 and W % 2 == 0, f"input size is not even {H}x{W}"
-        self.re = Rearrange('b (h ph) (w pw) c -> b (h w) (pw ph c)', ph=2, pw=2)
+        self.re = Rearrange("b (h ph) (w pw) c -> b (h w) (pw ph c)", ph=2, pw=2)
         self.reduction = nn.Linear(4 * dim, 2 * dim, bias=False)
         self.norm = norm_lyr(4 * dim)
 
@@ -356,14 +415,25 @@ class PatchMerge(nn.Module):
         x = self.reduction(x)
         return x
 
+
 class SwinLayer(nn.Module):
     """One stage of Swin Transformer."""
 
     def __init__(
-            self, dim: int, input_res: int | Size2D, depth: int, n_heads: int, window_size: int | Size2D,
-            mlp_ratio: float, proj_drop_rate: float, attn_drop_rate: float, path_drop_rate: float | list[float],
-            norm_layer: type[nn.Module] = nn.LayerNorm, downsample: bool = False, use_sdpa_attn: bool = True
-        ):
+        self,
+        dim: int,
+        input_res: int | Size2D,
+        depth: int,
+        n_heads: int,
+        window_size: int | Size2D,
+        mlp_ratio: float,
+        proj_drop_rate: float,
+        attn_drop_rate: float,
+        path_drop_rate: float | list[float],
+        norm_layer: type[nn.Module] = nn.LayerNorm,
+        downsample: bool = False,
+        use_sdpa_attn: bool = True,
+    ):
         """
         Args:
             dim: Embedding dim.
@@ -372,6 +442,9 @@ class SwinLayer(nn.Module):
             n_heads: Number of heads.
             window_size: Window size.
             downsample: Apply patch merging.
+
+        Returns:
+            None: This initializer does not return a value.
         """
         super().__init__()
         self.dim = dim
@@ -380,11 +453,19 @@ class SwinLayer(nn.Module):
         window_size_2d = to_2tuple(window_size)
         self.blks = nn.ModuleList(
             SwinTransformerBlock(
-                dim=dim, input_res=self.input_res, n_heads=n_heads, window_size=window_size_2d,
-                shift_size=0 if (l % 2 == 0) else window_size_2d[0] // 2, mlp_ratio=mlp_ratio,
-                proj_drop_rate=proj_drop_rate, attn_drop_rate=attn_drop_rate,
-                path_drop_rate=path_drop_rate[l] if isinstance(path_drop_rate, list) else path_drop_rate,
-                norm_layer=norm_layer, use_sdpa_attn=use_sdpa_attn
+                dim=dim,
+                input_res=self.input_res,
+                n_heads=n_heads,
+                window_size=window_size_2d,
+                shift_size=0 if (l % 2 == 0) else window_size_2d[0] // 2,
+                mlp_ratio=mlp_ratio,
+                proj_drop_rate=proj_drop_rate,
+                attn_drop_rate=attn_drop_rate,
+                path_drop_rate=path_drop_rate[l]
+                if isinstance(path_drop_rate, list)
+                else path_drop_rate,
+                norm_layer=norm_layer,
+                use_sdpa_attn=use_sdpa_attn,
             )
             for l in range(depth)
         )
@@ -395,6 +476,11 @@ class SwinLayer(nn.Module):
             self.downsample = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Run all blocks in the stage and optional downsampling.
+
+        Returns:
+            torch.Tensor: Stage output tokens.
+        """
         for blk in self.blks:
             x = blk(x)
 
@@ -403,34 +489,51 @@ class SwinLayer(nn.Module):
 
         return x
 
+
 class SwinTransformer(nn.Module):
     """Swin Transformer"""
 
     def __init__(self, cfg: SwinTransformerConfig, use_sdpa_attn: bool = True):
+        """Initialize the Swin Transformer backbone and classifier head.
+
+        Returns:
+            None: This initializer does not return a value.
+        """
         super().__init__()
 
         self.cfg = cfg
 
         self.patch_embed = PatchEmbed(
-            img_size=cfg.img_size, patch_size=cfg.patch_size, in_dim=cfg.img_chls,
-            out_dim=cfg.n_embed, norm_lyr=nn.LayerNorm if cfg.patch_norm else None
+            img_size=cfg.img_size,
+            patch_size=cfg.patch_size,
+            in_dim=cfg.img_chls,
+            out_dim=cfg.n_embed,
+            norm_lyr=nn.LayerNorm if cfg.patch_norm else None,
         )
         self.n_patches = (cfg.img_size // cfg.patch_size) ** 2
         patches_res = cfg.img_size // cfg.patch_size, cfg.img_size // cfg.patch_size
 
-        stoch_depth_drop_rates = [x.item() for x in torch.linspace(0, cfg.stoch_depth_drop_rate, sum(cfg.depths))]
+        stoch_depth_drop_rates = [
+            x.item() for x in torch.linspace(0, cfg.stoch_depth_drop_rate, sum(cfg.depths))
+        ]
 
         self.n_layers = len(cfg.depths)
 
         self.layers = nn.ModuleList(
             SwinLayer(
-                dim=int(cfg.n_embed * 2 ** l),
-                input_res=(patches_res[0] // (2 ** l), patches_res[1] // (2 ** l)),
-                depth=cfg.depths[l], n_heads=cfg.n_heads[l], window_size=cfg.window_size,
-                mlp_ratio=cfg.mlp_ratio, proj_drop_rate=cfg.drop_rate,
-                attn_drop_rate=cfg.attn_drop_rate, downsample=(l < self.n_layers - 1),
-                path_drop_rate=stoch_depth_drop_rates[sum(cfg.depths[:l]):sum(cfg.depths[:l+1])],
-                use_sdpa_attn=use_sdpa_attn
+                dim=int(cfg.n_embed * 2**l),
+                input_res=(patches_res[0] // (2**l), patches_res[1] // (2**l)),
+                depth=cfg.depths[l],
+                n_heads=cfg.n_heads[l],
+                window_size=cfg.window_size,
+                mlp_ratio=cfg.mlp_ratio,
+                proj_drop_rate=cfg.drop_rate,
+                attn_drop_rate=cfg.attn_drop_rate,
+                downsample=(l < self.n_layers - 1),
+                path_drop_rate=stoch_depth_drop_rates[
+                    sum(cfg.depths[:l]) : sum(cfg.depths[: l + 1])
+                ],
+                use_sdpa_attn=use_sdpa_attn,
             )
             for l in range(self.n_layers)
         )
@@ -441,6 +544,11 @@ class SwinTransformer(nn.Module):
         self.apply(self._init_weights)
 
     def _init_weights(self, m: nn.Module) -> None:
+        """Initialize supported module weights in place.
+
+        Returns:
+            None: Mutates the provided module parameters.
+        """
         if isinstance(m, nn.Linear):
             nn.init.trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
@@ -450,29 +558,48 @@ class SwinTransformer(nn.Module):
             nn.init.ones_(m.weight)
 
     def loss_fn(
-            self, x: torch.Tensor, y: torch.Tensor, weight: torch.Tensor | None = None,
-            label_smoothing: float = .0
-        ) -> torch.Tensor:
+        self,
+        x: torch.Tensor,
+        y: torch.Tensor,
+        weight: torch.Tensor | None = None,
+        label_smoothing: float = 0.0,
+    ) -> torch.Tensor:
+        """Compute the classification loss for a batch.
+
+        Returns:
+            torch.Tensor: Scalar cross-entropy loss.
+        """
         return F.cross_entropy(x, y, weight=weight, label_smoothing=label_smoothing)
 
     def forward(self, x: torch.Tensor, y: torch.Tensor | None = None):
+        """Run the Swin model and optionally compute loss.
+
+        Returns:
+            torch.Tensor | tuple[torch.Tensor, torch.Tensor]: Logits, or logits with loss when labels are provided.
+        """
         x = self.patch_embed(x)
 
         for lyr in self.layers:
             x = lyr(x)
 
-        x = self.norm(x) # B, L, C
+        x = self.norm(x)  # B, L, C
         x = x.mean(dim=1)
-        x = self.head(x) # B, n_class
+        x = self.head(x)  # B, n_class
         if y is not None:
             loss = self.loss_fn(x, y)
             return x, loss
         return x
 
     def configure_optimizer(self, optim_cfg: DictConfig, device: torch.device):
+        """Create the optimizer configured for this model.
+
+        Returns:
+            torch.optim.Optimizer: Optimizer instance with decay groups applied.
+        """
         return _configure_optimizer(self, optim_cfg, device)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     use_sdpa_attn = True
     model = SwinTransformer(SwinTransformerConfig(), use_sdpa_attn=use_sdpa_attn)
     x = torch.randn((2, 3, 224, 224))

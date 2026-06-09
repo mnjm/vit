@@ -1,36 +1,46 @@
+"""Training entrypoint for ViT, DeiT, and Swin experiments driven by Hydra."""
+
 import logging
 from contextlib import nullcontext
 from pathlib import Path
+
 import hydra
-from hydra.core.hydra_config import HydraConfig
-from omegaconf import DictConfig
-from omegaconf import OmegaConf
 import torch
+from hydra.core.hydra_config import HydraConfig
+from omegaconf import DictConfig, OmegaConf
 from tqdm.auto import tqdm
-from model import init_model, init_deit
+
 from data import init_dataloaders, show_batch
+from model import init_deit, init_model
 from utils import (
+    AverageMetric,
+    WandBLogger,
+    calc_accuracy,
+    cosine_with_linear_warmup_lr_scheduler,
+    get_ist_time_now,
+    timer,
     torch_compile_ckpt_fix,
     torch_get_device,
     torch_set_seed,
-    get_ist_time_now,
-    cosine_with_linear_warmup_lr_scheduler,
-    calc_accuracy,
-    timer,
-    AverageMetric,
-    WandBLogger
 )
+
 OmegaConf.register_new_resolver("now_ist", get_ist_time_now)
+
 
 @hydra.main(version_base=None, config_path="config", config_name="default")
 def main(cfg: DictConfig) -> None:
+    """Run the configured training and validation loop.
+
+    Returns:
+        None: Executes training side effects and writes checkpoints/logs.
+    """
     logger = logging.getLogger("vit")
     device = torch_get_device(cfg.device_type)
     logger.info(f"Using {device}")
     hydra_cfg = HydraConfig.get()
     log_dir = Path(hydra_cfg.runtime.output_dir)
     run_name = hydra_cfg.job.name
-    torch_autocast_dtype = {'f32': torch.float32, 'bf16': torch.bfloat16}[cfg.autocast_dtype]
+    torch_autocast_dtype = {"f32": torch.float32, "bf16": torch.bfloat16}[cfg.autocast_dtype]
 
     torch_set_seed(cfg.rng_seed)
 
@@ -41,20 +51,24 @@ def main(cfg: DictConfig) -> None:
 
     start_epoch = 1
     ckpt = None
-    if cfg.init_from == 'scratch':
+    if cfg.init_from == "scratch":
         model = init_model(cfg, device)
         model.to(device)
     else:
         ckpt = torch.load(cfg.init_from, map_location=device, weights_only=False)
-        ckpt_cfg = ckpt['config']
+        ckpt_cfg = ckpt["config"]
         model = init_model(ckpt_cfg, device)
-        assert cfg.dataset.name == ckpt_cfg.dataset.name, f"Different dataset: {ckpt_cfg.dataset.name}"
+        assert cfg.dataset.name == ckpt_cfg.dataset.name, (
+            f"Different dataset: {ckpt_cfg.dataset.name}"
+        )
         model.to(device)
-        model.load_state_dict(torch_compile_ckpt_fix(ckpt['model']))
+        model.load_state_dict(torch_compile_ckpt_fix(ckpt["model"]))
         logger.info(f"Loaded checkpoint from {cfg.init_from}")
-        start_epoch = ckpt['epoch'] + 1
+        start_epoch = ckpt["epoch"] + 1
 
-    logger.info(f"Model type: {cfg.model.name} params: {sum(p.numel() for p in model.parameters()):,}")
+    logger.info(
+        f"Model type: {cfg.model.name} params: {sum(p.numel() for p in model.parameters()):,}"
+    )
     runtime_model = model
     if cfg.torch_compile:
         runtime_model = torch.compile(model)
@@ -66,7 +80,7 @@ def main(cfg: DictConfig) -> None:
     if cfg.lr_scheduler is not None:
         if cfg.lr_scheduler.name == "cosine-with-linear-warmup":
             kwargs = dict(cfg.lr_scheduler)
-            del kwargs['name']
+            del kwargs["name"]
             lr_scheduler = cosine_with_linear_warmup_lr_scheduler(
                 optimizer=optimizer, total_steps=cfg.n_epochs * len(train_dataloader), **kwargs
             )
@@ -74,8 +88,8 @@ def main(cfg: DictConfig) -> None:
             raise NotImplementedError(f"{cfg.lr_scheduler.name} is not implemented")
 
     if ckpt is not None:
-        optimizer.load_state_dict(ckpt['optimizer'])
-        lr_schdlr_state = ckpt.get('lr_scheduler', None)
+        optimizer.load_state_dict(ckpt["optimizer"])
+        lr_schdlr_state = ckpt.get("lr_scheduler", None)
         if lr_schdlr_state and lr_scheduler:
             lr_scheduler.load_state_dict(lr_schdlr_state)
 
@@ -88,7 +102,7 @@ def main(cfg: DictConfig) -> None:
         else nullcontext()
     )
 
-    if hasattr(cfg, 'deit') and getattr(cfg.deit, 'enable', False): # init deit training if enabled
+    if hasattr(cfg, "deit") and getattr(cfg.deit, "enable", False):  # init deit training if enabled
         init_deit(model, cfg, device, logger)
 
     wb_logger = WandBLogger(
@@ -97,14 +111,25 @@ def main(cfg: DictConfig) -> None:
         config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),
         tags=("train", "val"),
         metrics=("loss", "acc@1", "acc@5", "time"),
-        enable=cfg.logging.wandb.enable
+        enable=cfg.logging.wandb.enable,
     )
 
     @timer
     def train_epoch():
+        """Execute one full training epoch.
+
+        Returns:
+            tuple[float, float, float]: Average loss, top-1 accuracy, and top-5 accuracy.
+        """
         runtime_model.train()
         loss, acc1, acc5 = AverageMetric(), AverageMetric(), AverageMetric()
-        progress_bar = tqdm(train_dataloader, dynamic_ncols=True, desc="Train", leave=False, disable=(not cfg.interactive))
+        progress_bar = tqdm(
+            train_dataloader,
+            dynamic_ncols=True,
+            desc="Train",
+            leave=False,
+            disable=(not cfg.interactive),
+        )
         for batch in progress_bar:
             imgs, lbls = batch[0].to(device), batch[1].to(device)
 
@@ -113,7 +138,7 @@ def main(cfg: DictConfig) -> None:
                 pred, loss_i = runtime_model(imgs, lbls)
             loss_i.backward()
             if cfg.clip_grad_norm_1:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             if lr_scheduler is not None:
                 lr_scheduler.step()
@@ -123,11 +148,13 @@ def main(cfg: DictConfig) -> None:
             loss.update(loss_i.item(), batch_size)
             acc1.update(acc1_i.item(), batch_size)
             acc5.update(acc5_i.item(), batch_size)
-            progress_bar.set_postfix({
-                'loss': f"{loss_i.item():.4f}",
-                'acc@1': f"{acc1_i.item():.2%}",
-                'acc@5': f"{acc5_i.item():.2%}",
-            })
+            progress_bar.set_postfix(
+                {
+                    "loss": f"{loss_i.item():.4f}",
+                    "acc@1": f"{acc1_i.item():.2%}",
+                    "acc@5": f"{acc5_i.item():.2%}",
+                }
+            )
 
         progress_bar.close()
         if device.type == "cuda":
@@ -137,7 +164,18 @@ def main(cfg: DictConfig) -> None:
     @timer
     @torch.no_grad()
     def val_epoch():
-        progress_bar = tqdm(val_dataloader, dynamic_ncols=True, desc="Val", leave=False, disable=(not cfg.interactive))
+        """Execute one validation epoch.
+
+        Returns:
+            tuple[float, float, float]: Average loss, top-1 accuracy, and top-5 accuracy.
+        """
+        progress_bar = tqdm(
+            val_dataloader,
+            dynamic_ncols=True,
+            desc="Val",
+            leave=False,
+            disable=(not cfg.interactive),
+        )
 
         runtime_model.eval()
         loss, acc1, acc5 = AverageMetric(), AverageMetric(), AverageMetric()
@@ -152,11 +190,13 @@ def main(cfg: DictConfig) -> None:
             loss.update(loss_i.item(), batch_size)
             acc1.update(acc1_i.item(), batch_size)
             acc5.update(acc5_i.item(), batch_size)
-            progress_bar.set_postfix({
-                'loss': f"{loss_i.item():.4f}",
-                'acc@1': f"{acc1_i.item():.2%}",
-                'acc@5': f"{acc5_i.item():.2%}",
-            })
+            progress_bar.set_postfix(
+                {
+                    "loss": f"{loss_i.item():.4f}",
+                    "acc@1": f"{acc1_i.item():.2%}",
+                    "acc@5": f"{acc5_i.item():.2%}",
+                }
+            )
 
         progress_bar.close()
         if device.type == "cuda":
@@ -165,33 +205,47 @@ def main(cfg: DictConfig) -> None:
 
     t, (loss, acc1, acc5) = val_epoch()
     logger.info(f"Initial Val Loss: {loss:.4f} Acc@1: {acc1:.2%} Acc@5: {acc5:.2%} Time: {t:.2f}s")
-    wb_logger.log("val", {'epoch': start_epoch-1, 'loss': loss, 'acc@1': acc1, 'acc@5':acc5, 'time':t})
+    wb_logger.log(
+        "val", {"epoch": start_epoch - 1, "loss": loss, "acc@1": acc1, "acc@5": acc5, "time": t}
+    )
     for epoch in range(start_epoch, cfg.n_epochs + 1):
         last_epoch = epoch == cfg.n_epochs
         logger.info(f"Epoch: {epoch}/{cfg.n_epochs}")
 
         # Train
         t, (loss, acc1, acc5) = train_epoch()
-        logger.info(f"{'Train':<5} Loss: {loss:.4f} Acc@1: {acc1:.2%} Acc@5: {acc5:.2%} Time: {t:.2f}s")
-        wb_logger.log("train", {'epoch': epoch, 'loss': loss, 'acc@1': acc1, 'acc@5':acc5, 'time':t})
+        logger.info(
+            f"{'Train':<5} Loss: {loss:.4f} Acc@1: {acc1:.2%} Acc@5: {acc5:.2%} Time: {t:.2f}s"
+        )
+        wb_logger.log(
+            "train", {"epoch": epoch, "loss": loss, "acc@1": acc1, "acc@5": acc5, "time": t}
+        )
 
         # Val
         if last_epoch or epoch % cfg.val_every_epoch == 0:
             t, (loss, acc1, acc5) = val_epoch()
-            logger.info(f"{'Val':<5} Loss: {loss:.4f} Acc@1: {acc1:.2%} Acc@5: {acc5:.2%} Time: {t:.2f}s")
-            wb_logger.log("val", {'epoch': epoch, 'loss': loss, 'acc@1': acc1, 'acc@5':acc5, 'time':t})
+            logger.info(
+                f"{'Val':<5} Loss: {loss:.4f} Acc@1: {acc1:.2%} Acc@5: {acc5:.2%} Time: {t:.2f}s"
+            )
+            wb_logger.log(
+                "val", {"epoch": epoch, "loss": loss, "acc@1": acc1, "acc@5": acc5, "time": t}
+            )
 
         # Ckpt
         if last_epoch or epoch % cfg.save_every_epoch == 0:
             ckpt_path = log_dir / f"{cfg.model_name}.pt"
-            torch.save({
-                'model': model.state_dict(),
-                'config': cfg,
-                'epoch': epoch,
-                'optimizer': optimizer.state_dict(),
-                'lr_scheduler': lr_scheduler.state_dict() if lr_scheduler is not None else None,
-            }, ckpt_path)
+            torch.save(
+                {
+                    "model": model.state_dict(),
+                    "config": cfg,
+                    "epoch": epoch,
+                    "optimizer": optimizer.state_dict(),
+                    "lr_scheduler": lr_scheduler.state_dict() if lr_scheduler is not None else None,
+                },
+                ckpt_path,
+            )
             logger.info(f"Saved checkpoint to {str(ckpt_path)}")
+
 
 if __name__ == "__main__":
     main()

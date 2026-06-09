@@ -1,3 +1,5 @@
+"""Regression tests for the local Swin Transformer implementation."""
+
 from model.swin import SwinTransformer, SwinTransformerConfig
 from torchvision.models.swin_transformer import swin_b, swin_s, swin_t
 from pathlib import Path
@@ -7,13 +9,19 @@ import torch
 import torch.nn as nn
 
 model_map = {
-    'Swin-B': swin_b,
-    'Swin-T': swin_t,
-    'Swin-S': swin_s,
+    "Swin-B": swin_b,
+    "Swin-T": swin_t,
+    "Swin-S": swin_s,
 }
-yml_files = [ Path("./config/model") / f"{name}.yaml" for name in model_map.keys() ]
+yml_files = [Path("./config/model") / f"{name}.yaml" for name in model_map.keys()]
+
 
 def test_swin_output_format():
+    """Verify the Swin forward pass returns class logits.
+
+    Returns:
+        None: Asserts on the model output shape.
+    """
     cfg = SwinTransformerConfig()
     model = SwinTransformer(cfg)
 
@@ -21,7 +29,13 @@ def test_swin_output_format():
     out = model(dummy)
     assert out.shape == (2, 1000), f"Output mismatch {out.shape}"
 
+
 def test_swin_param_match():
+    """Check that parameter counts match torchvision reference models.
+
+    Returns:
+        None: Asserts parity for each configured model variant.
+    """
     # Test all available Swin models from `torchvision.models`
     for yml_file in yml_files:
         cfg = OmegaConf.load(yml_file)
@@ -37,6 +51,7 @@ def test_swin_param_match():
         my_model = SwinTransformer(SwinTransformerConfig(**kwargs))
         my_params = sum(p.numel() for p in my_model.parameters())
         assert pt_params == my_params, f"{name} params mismatch {pt_params=} {my_params=}"
+
 
 # There are architectural differences between my implementation and torchvision, so I decided not to test this.
 # def load_weights_from_tv(my_model, tv_model):
@@ -107,8 +122,14 @@ def test_swin_param_match():
 #         max_diff = (y_my - y_tv).abs().max().item()
 #         assert torch.allclose(y_tv, y_my, atol=1e-5, rtol=1e-5), f"Not bit-matching! {max_diff}"
 
+
 @torch.no_grad()
 def test_swin_sdpa_attn():
+    """Verify SDPA and fallback attention implementations agree.
+
+    Returns:
+        None: Asserts the two attention paths produce matching outputs.
+    """
     for yml_file in yml_files:
         cfg = OmegaConf.load(yml_file)
         cfg.img_size = 224
