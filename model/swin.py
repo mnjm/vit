@@ -2,14 +2,18 @@
 Minimal Swin Transformer implementation in PyTorch.
 Ref: https://github.com/microsoft/Swin-Transformer/blob/main/models/swin_transformer.py
 """
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+from omegaconf import DictConfig
 import torch
 import torch.nn.functional as F
 import warnings
 from torch import nn
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
-from dataclasses import dataclass, field
 from .vit import MLP, PatchEmbed, StochDepthDrop, _configure_optimizer
+
+type Size2D = tuple[int, int]
 
 @dataclass
 class SwinTransformerConfig:
@@ -38,18 +42,21 @@ class SwinTransformerConfig:
     img_chls: int = 3
     n_class: int = 1000
     n_embed: int = 96
-    depths: list = field(default_factory=lambda: [2, 2, 6, 2])
-    n_heads: list = field(default_factory=lambda: [3, 6, 12, 24])
+    depths: list[int] = field(default_factory=lambda: [2, 2, 6, 2])
+    n_heads: list[int] = field(default_factory=lambda: [3, 6, 12, 24])
     window_size: int = 7
     mlp_ratio: float = 4.
     drop_rate: float = 0.
     attn_drop_rate: float = 0.
     stoch_depth_drop_rate: float = 0.
 
-def to_2tuple(x):
-    return x if isinstance(x, (list, tuple)) else (x, x)
+def to_2tuple(x: int | Sequence[int]) -> Size2D:
+    if isinstance(x, Sequence):
+        assert len(x) == 2, f"Expected a pair, got {x}"
+        return int(x[0]), int(x[1])
+    return x, x
 
-def window_partition(x, window_size: int|tuple):
+def window_partition(x: torch.Tensor, window_size: int | Size2D) -> torch.Tensor:
     """Partition feature map into non-overlapping windows.
 
     Args:
@@ -59,7 +66,7 @@ def window_partition(x, window_size: int|tuple):
     Returns:
         Windows (B * num_windows, Wh, Ww, C).
     """
-    B, H, W, C = x.shape
+    _, H, W, _ = x.shape
     wsh, wsw = to_2tuple(window_size)
     nh, nw = H // wsh, W // wsw
     windows = rearrange(
@@ -68,7 +75,7 @@ def window_partition(x, window_size: int|tuple):
     )
     return windows
 
-def window_reverse(windows, window_size: int|tuple, H:int, W:int):
+def window_reverse(windows: torch.Tensor, window_size: int | Size2D, H: int, W: int) -> torch.Tensor:
     """Reconstruct feature map from windows.
 
     Args:
@@ -93,7 +100,7 @@ class ShiftedWindowMHSA(nn.Module):
     """Window-based multi-head self-attention with relative position bias."""
 
     def __init__(
-            self, dim: int, window_size: int, n_heads: int, attn_drop_rate: float = .0,
+            self, dim: int, window_size: int | Size2D, n_heads: int, attn_drop_rate: float = .0,
             proj_drop_rate: float = .0, use_sdpa_attn: bool = True
         ):
         """
@@ -126,6 +133,7 @@ class ShiftedWindowMHSA(nn.Module):
         relative_coords[:, :, 1] += self.window_size[1] - 1
         relative_coords[:, :, 0] *= 2 * self.window_size[1] - 1 # 2d coords to 1d
         relative_position_index = relative_coords.sum(-1)  # Wh*Ww, Wh*Ww
+        self.relative_position_index: torch.Tensor
         self.register_buffer("relative_position_index", relative_position_index)
 
         self.split_qkv = Rearrange("b n (t h d) -> t b h n d", t=3, h=n_heads, d=self.head_dim)
@@ -142,7 +150,7 @@ class ShiftedWindowMHSA(nn.Module):
 
         nn.init.trunc_normal_(self.relative_position_bias_table, std=.02)
 
-    def forward(self, x, mask=None):
+    def forward(self, x: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
         """
         Args:
             x: Window tokens (Bw, N, C), where Bw = batch_size * windows_per_image, N = window_size^2
@@ -155,9 +163,11 @@ class ShiftedWindowMHSA(nn.Module):
 
         q, k, v = self.split_qkv(self.qkv(x))
 
-        rel_pos_bias = self.relative_position_bias_table[
-            self.relative_position_index.view(-1)
-        ]
+        rel_pos_bias = torch.index_select(
+            self.relative_position_bias_table,
+            0,
+            torch.reshape(self.relative_position_index, (-1,)),
+        )
         rel_pos_bias = rel_pos_bias.view(
             self.window_size[0] * self.window_size[1],
             self.window_size[0] * self.window_size[1],
@@ -198,10 +208,10 @@ class SwinTransformerBlock(nn.Module):
     """Swin Transformer block with optional window shift."""
 
     def __init__(
-            self, dim: int, input_res: int | tuple, n_heads: int, window_size: int | tuple,
+            self, dim: int, input_res: int | Size2D, n_heads: int, window_size: int | Size2D,
             shift_size: int, mlp_ratio: float, attn_drop_rate: float, proj_drop_rate: float,
-            path_drop_rate: float, act_layer: nn.Module = nn.GELU,
-            norm_layer: nn.Module = nn.LayerNorm, use_sdpa_attn: bool =True
+            path_drop_rate: float, act_layer: type[nn.Module] = nn.GELU,
+            norm_layer: type[nn.Module] = nn.LayerNorm, use_sdpa_attn: bool =True
         ):
         """
         Args:
@@ -266,9 +276,10 @@ class SwinTransformerBlock(nn.Module):
         else:
             attn_mask = None
 
+        self.attn_mask: torch.Tensor | None
         self.register_buffer("attn_mask", attn_mask)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
             x: Input tokens (B, H*W, C).
@@ -311,7 +322,7 @@ class SwinTransformerBlock(nn.Module):
 class PatchMerge(nn.Module):
     """Patch merging layer (downsampling)."""
 
-    def __init__(self, dim: int, input_res: int | tuple, norm_lyr: nn.Module = nn.LayerNorm):
+    def __init__(self, dim: int, input_res: int | Size2D, norm_lyr: type[nn.Module] = nn.LayerNorm):
         """
         Args:
             dim: Input embedding dim.
@@ -320,14 +331,14 @@ class PatchMerge(nn.Module):
         """
         super().__init__()
         self.dim = dim
-        self.input_res = input_res
+        self.input_res = to_2tuple(input_res)
         H, W = self.input_res
         assert H % 2 == 0 and W % 2 == 0, f"input size is not even {H}x{W}"
         self.re = Rearrange('b (h ph) (w pw) c -> b (h w) (pw ph c)', ph=2, pw=2)
         self.reduction = nn.Linear(4 * dim, 2 * dim, bias=False)
         self.norm = norm_lyr(4 * dim)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
             x: Tokens (B, H*W, C).
@@ -349,9 +360,9 @@ class SwinLayer(nn.Module):
     """One stage of Swin Transformer."""
 
     def __init__(
-            self, dim: int, input_res: int | tuple, depth: int, n_heads: int, window_size: int | tuple,
-            mlp_ratio: float, proj_drop_rate: float, attn_drop_rate: float, path_drop_rate: float,
-            norm_layer: nn.Module = nn.LayerNorm, downsample: bool = False, use_sdpa_attn: bool = True
+            self, dim: int, input_res: int | Size2D, depth: int, n_heads: int, window_size: int | Size2D,
+            mlp_ratio: float, proj_drop_rate: float, attn_drop_rate: float, path_drop_rate: float | list[float],
+            norm_layer: type[nn.Module] = nn.LayerNorm, downsample: bool = False, use_sdpa_attn: bool = True
         ):
         """
         Args:
@@ -364,12 +375,13 @@ class SwinLayer(nn.Module):
         """
         super().__init__()
         self.dim = dim
-        self.input_res = input_res
+        self.input_res = to_2tuple(input_res)
         self.depth = depth
+        window_size_2d = to_2tuple(window_size)
         self.blks = nn.ModuleList(
             SwinTransformerBlock(
-                dim=dim, input_res=input_res, n_heads=n_heads, window_size=window_size,
-                shift_size= 0 if (l % 2 == 0) else window_size // 2, mlp_ratio=mlp_ratio,
+                dim=dim, input_res=self.input_res, n_heads=n_heads, window_size=window_size_2d,
+                shift_size=0 if (l % 2 == 0) else window_size_2d[0] // 2, mlp_ratio=mlp_ratio,
                 proj_drop_rate=proj_drop_rate, attn_drop_rate=attn_drop_rate,
                 path_drop_rate=path_drop_rate[l] if isinstance(path_drop_rate, list) else path_drop_rate,
                 norm_layer=norm_layer, use_sdpa_attn=use_sdpa_attn
@@ -378,11 +390,11 @@ class SwinLayer(nn.Module):
         )
 
         if downsample:
-            self.downsample = PatchMerge(dim=dim, input_res=input_res, norm_lyr=norm_layer)
+            self.downsample = PatchMerge(dim=dim, input_res=self.input_res, norm_lyr=norm_layer)
         else:
             self.downsample = None
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         for blk in self.blks:
             x = blk(x)
 
@@ -428,7 +440,7 @@ class SwinTransformer(nn.Module):
         self.head = nn.Linear(self.n_features, cfg.n_class) if cfg.n_class > 0 else nn.Identity()
         self.apply(self._init_weights)
 
-    def _init_weights(self, m):
+    def _init_weights(self, m: nn.Module) -> None:
         if isinstance(m, nn.Linear):
             nn.init.trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
@@ -437,10 +449,13 @@ class SwinTransformer(nn.Module):
             nn.init.zeros_(m.bias)
             nn.init.ones_(m.weight)
 
-    def loss_fn(self, x, y, weight=None, label_smoothing=.0):
+    def loss_fn(
+            self, x: torch.Tensor, y: torch.Tensor, weight: torch.Tensor | None = None,
+            label_smoothing: float = .0
+        ) -> torch.Tensor:
         return F.cross_entropy(x, y, weight=weight, label_smoothing=label_smoothing)
 
-    def forward(self, x, y=None):
+    def forward(self, x: torch.Tensor, y: torch.Tensor | None = None):
         x = self.patch_embed(x)
 
         for lyr in self.layers:
@@ -454,7 +469,7 @@ class SwinTransformer(nn.Module):
             return x, loss
         return x
 
-    def configure_optimizer(self, optim_cfg: object, device: torch.device):
+    def configure_optimizer(self, optim_cfg: DictConfig, device: torch.device):
         return _configure_optimizer(self, optim_cfg, device)
 
 if __name__ == '__main__':

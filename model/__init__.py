@@ -1,11 +1,13 @@
+import logging
 import torch
 import detectors  # noqa: F401
 import timm
+from omegaconf import DictConfig
 from .vit import ViTConfig, ViT
 from .deit import DeitConfig, DeiT
 from .swin import SwinTransformer, SwinTransformerConfig
 
-def init_model(cfg, device: torch.device):
+def init_model(cfg: DictConfig, device: torch.device) -> ViT | DeiT | SwinTransformer:
     name = cfg.model.name
     use_sdpa_attn = device.type != "mps"
     if name.startswith("DeiT"):
@@ -20,7 +22,7 @@ def init_model(cfg, device: torch.device):
         model = ViT(model_cfg, use_sdpa_attn=use_sdpa_attn)
     return model
 
-def init_deit(model, cfg, device, logger):
+def init_deit(model: torch.nn.Module, cfg: DictConfig, device: torch.device, logger: logging.Logger):
     assert isinstance(model, DeiT), "Model should be DeiT"
     teacher_name = cfg.deit.teacher_name
     # load teacher model
@@ -36,6 +38,4 @@ def init_deit(model, cfg, device, logger):
     logger.info(f"Loaded teacher model {teacher_name=}")
     return teacher
 
-__all__ = [
-    init_model, init_deit
-]
+__all__ = ["init_model", "init_deit"]

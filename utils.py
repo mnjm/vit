@@ -1,13 +1,18 @@
 import math
 import os
+from collections.abc import Callable
 from datetime import datetime
 from functools import wraps
 from time import time
+from typing import ParamSpec, TypeVar
 import pytz
 import torch
 import wandb
 from dotenv import load_dotenv
 from torch.optim.lr_scheduler import LambdaLR
+
+P = ParamSpec("P")
+T = TypeVar("T")
 
 def torch_get_device(device_type):
     if device_type == "cuda":
@@ -103,9 +108,9 @@ class AverageMetric:
         self.count += n
         self.avg = self.sum / self.count if self.count > 0 else 0
 
-def timer(func):
+def timer(func: Callable[P, T]) -> Callable[P, tuple[float, T]]:
     @wraps(func)
-    def wrapper(*args, **kwargs):
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> tuple[float, T]:
         t0 = time()
         ret = func(*args, **kwargs)
         t = time() - t0

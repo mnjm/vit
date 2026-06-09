@@ -2,6 +2,8 @@ import logging
 from contextlib import nullcontext
 from pathlib import Path
 import hydra
+from hydra.core.hydra_config import HydraConfig
+from omegaconf import DictConfig
 from omegaconf import OmegaConf
 import torch
 from tqdm.auto import tqdm
@@ -21,11 +23,11 @@ from utils import (
 OmegaConf.register_new_resolver("now_ist", get_ist_time_now)
 
 @hydra.main(version_base=None, config_path="config", config_name="default")
-def main(cfg):
+def main(cfg: DictConfig) -> None:
     logger = logging.getLogger("vit")
     device = torch_get_device(cfg.device_type)
     logger.info(f"Using {device}")
-    hydra_cfg = hydra.core.hydra_config.HydraConfig.get()
+    hydra_cfg = HydraConfig.get()
     log_dir = Path(hydra_cfg.runtime.output_dir)
     run_name = hydra_cfg.job.name
     torch_autocast_dtype = {'f32': torch.float32, 'bf16': torch.bfloat16}[cfg.autocast_dtype]
@@ -38,6 +40,7 @@ def main(cfg):
         show_batch(train_dataloader, N=16)
 
     start_epoch = 1
+    ckpt = None
     if cfg.init_from == 'scratch':
         model = init_model(cfg, device)
         model.to(device)
@@ -52,8 +55,10 @@ def main(cfg):
         start_epoch = ckpt['epoch'] + 1
 
     logger.info(f"Model type: {cfg.model.name} params: {sum(p.numel() for p in model.parameters()):,}")
+    runtime_model = model
     if cfg.torch_compile:
-        model = torch.compile(model)
+        runtime_model = torch.compile(model)
+        assert isinstance(runtime_model, torch.nn.Module)
 
     # optimizer
     optimizer = model.configure_optimizer(cfg.optimizer, device)
@@ -68,7 +73,7 @@ def main(cfg):
         else:
             raise NotImplementedError(f"{cfg.lr_scheduler.name} is not implemented")
 
-    if cfg.init_from != 'scratch':
+    if ckpt is not None:
         optimizer.load_state_dict(ckpt['optimizer'])
         lr_schdlr_state = ckpt.get('lr_scheduler', None)
         if lr_schdlr_state and lr_scheduler:
@@ -97,7 +102,7 @@ def main(cfg):
 
     @timer
     def train_epoch():
-        model.train()
+        runtime_model.train()
         loss, acc1, acc5 = AverageMetric(), AverageMetric(), AverageMetric()
         progress_bar = tqdm(train_dataloader, dynamic_ncols=True, desc="Train", leave=False, disable=(not cfg.interactive))
         for batch in progress_bar:
@@ -105,7 +110,7 @@ def main(cfg):
 
             optimizer.zero_grad(set_to_none=True)
             with autocast_ctx:
-                pred, loss_i = model(imgs, lbls)
+                pred, loss_i = runtime_model(imgs, lbls)
             loss_i.backward()
             if cfg.clip_grad_norm_1:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.)
@@ -134,13 +139,13 @@ def main(cfg):
     def val_epoch():
         progress_bar = tqdm(val_dataloader, dynamic_ncols=True, desc="Val", leave=False, disable=(not cfg.interactive))
 
-        model.eval()
+        runtime_model.eval()
         loss, acc1, acc5 = AverageMetric(), AverageMetric(), AverageMetric()
         for batch in progress_bar:
             imgs, lbls = batch[0].to(device), batch[1].to(device)
 
             with autocast_ctx:
-                pred, loss_i = model(imgs, lbls)
+                pred, loss_i = runtime_model(imgs, lbls)
 
             acc1_i, acc5_i = calc_accuracy(pred, lbls, (1, 5))
             batch_size = lbls.size(0)

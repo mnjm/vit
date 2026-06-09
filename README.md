@@ -1,6 +1,6 @@
 # Vision Transformers (ViT)
 
-A minimal PyTorch implementation of [Vision Transformers(ViT)](https://arxiv.org/pdf/2010.11929), its varients [Data efficient Image Transformers (DeiT)](https://arxiv.org/pdf/2012.12877) and [Swin Transformers](https://arxiv.org/pdf/2103.14030). Experimented with CIFAR-100 (ViT-T/8 vs DeiT-T/8) and Tiny-Imagenet dataset with a (ViT-T/8 vs Swin-T-TinyImageNet), but supports other varients as well.
+A minimal PyTorch implementation of [Vision Transformers(ViT)](https://arxiv.org/pdf/2010.11929), its varients [Data efficient Image Transformers (DeiT)](https://arxiv.org/pdf/2012.12877) and [Swin Transformers](https://arxiv.org/pdf/2103.14030). Experimented with CIFAR-100 (ViT-T/8 vs DeiT-T/8) and Tiny-Imagenet dataset with a (ViT-16L-384D-8-TinyImageNet vs Swin-T-TinyImageNet), but supports other varients as well.
 
 Architectural correctness is tested via parameter counts and output parity, matched against torchvision implementations (with exceptions for Swin due to differing internal choices).
 
@@ -10,7 +10,7 @@ Configuration is managed using Hydra, with optional experiment tracking via Weig
 
 ![CIFAR-100 Plots](https://raw.githubusercontent.com/mnjm/vision-transformers/refs/heads/assets/train-plots.png)
 
-## ViT-B/8 vs Swin-T-TinyImageNet on TinyImageNet
+## ViT-16L-384D-8-TinyImageNet vs Swin-T-TinyImageNet on TinyImageNet
 
 ![Tiny Image Net Plots](https://raw.githubusercontent.com/mnjm/vision-transformers/refs/heads/assets/train-plots-tiny-imagenet.png)
 
@@ -36,7 +36,7 @@ uv run train.py +run=deit-cifar100
 ```
 Uses frozen `resnet18_cifar100` (via timm) as Teacher and is used for hard distillation (as it is showen to work well in DeiT paper)
 
-### Train ViT-T/8 on Tiny-Imagenet
+### Train ViT-16L-384D-8-TinyImageNet on Tiny-Imagenet
 
 ```bash
 uv run train.py +run=vit-tiny-imagenet

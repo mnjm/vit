@@ -108,7 +108,7 @@ def test_swin_param_match():
 #         assert torch.allclose(y_tv, y_my, atol=1e-5, rtol=1e-5), f"Not bit-matching! {max_diff}"
 
 @torch.no_grad()
-def test_swin_flex_attn():
+def test_swin_sdpa_attn():
     for yml_file in yml_files:
         cfg = OmegaConf.load(yml_file)
         cfg.img_size = 224
@@ -118,14 +118,14 @@ def test_swin_flex_attn():
         kwargs = dict(cfg)
         if name not in model_map:
             continue
-        model = SwinTransformer(SwinTransformerConfig(**kwargs))
-        flex_model = SwinTransformer(SwinTransformerConfig(**kwargs), use_flash_attn=True)
+        model = SwinTransformer(SwinTransformerConfig(**kwargs), use_sdpa_attn=False)
+        sdpa_model = SwinTransformer(SwinTransformerConfig(**kwargs), use_sdpa_attn=True)
         model.eval()
-        flex_model.eval()
-        flex_model.load_state_dict(model.state_dict())
+        sdpa_model.eval()
+        sdpa_model.load_state_dict(model.state_dict())
 
         x = torch.randn(2, 3, 224, 224)
         y = model(x)
-        y_flex = flex_model(x)
-        max_diff = (y_flex - y).abs().max().item()
-        assert torch.allclose(y, y_flex, atol=1e-5, rtol=1e-5), f"Not bit-matching! {max_diff}"
+        y_sdpa = sdpa_model(x)
+        max_diff = (y_sdpa - y).abs().max().item()
+        assert torch.allclose(y, y_sdpa, atol=1e-5, rtol=1e-5), f"Not bit-matching! {max_diff}"

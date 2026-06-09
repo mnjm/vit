@@ -10,6 +10,7 @@ import warnings
 from dataclasses import dataclass
 from einops.layers.torch import Rearrange
 from hydra.utils import instantiate
+from omegaconf import DictConfig
 
 @dataclass
 class ViTConfig:
@@ -49,12 +50,16 @@ class ViTConfig:
 class PatchEmbed(nn.Module):
     """Image to patch embedding module."""
 
-    def __init__(self, img_size: int, patch_size: int, in_dim: int, out_dim: int, norm_lyr: type[nn.Module] = nn.Identity):
+    def __init__(
+            self, img_size: int, patch_size: int, in_dim: int, out_dim: int,
+            norm_lyr: type[nn.Module] | None = nn.Identity
+        ):
         super().__init__()
         assert img_size % patch_size == 0, f"{patch_size=} must evenly divide {img_size=}"
         self.proj = nn.Conv2d(in_dim, out_dim, kernel_size=patch_size, stride=patch_size, bias=True)
         self.re = Rearrange("b c h w -> b (h w) c")
-        self.norm = norm_lyr(out_dim)
+        norm_factory = nn.Identity if norm_lyr is None else norm_lyr
+        self.norm = norm_factory(out_dim)
 
     def forward(self, x):
         x = self.proj(x) # (B, n_embd, H/patch_size, W/patch_size)
@@ -215,19 +220,19 @@ class ViT(nn.Module):
             return logits, loss
         return logits
 
-    def configure_optimizer(self, optim_cfg, device):
+    def configure_optimizer(self, optim_cfg: DictConfig, device: torch.device):
         return _configure_optimizer(self, optim_cfg, device)
 
-def _configure_optimizer(model, optim_cfg: object, device: torch.device):
-    optim_cfg.fused = getattr(optim_cfg, 'fused', False) and device.type == "cuda"
+def _configure_optimizer(model: nn.Module, optim_cfg: DictConfig, device: torch.device):
+    optim_cfg["fused"] = bool(optim_cfg.get("fused", False)) and device.type == "cuda"
     params_dict = { pn: p for pn, p in model.named_parameters() }
     params_dict = { pn:p for pn, p in params_dict.items() if p.requires_grad } # filter params that requires grad
     # create optim groups of any params that is 2D or more. This group will be weight decayed ie weight tensors in Linear and embeddings
     decay_params = [ p for p in params_dict.values() if p.dim() >= 2]
     # create optim groups of any params that is 1D. All biases and layernorm params
     no_decay_params = [ p for p in params_dict.values() if p.dim() < 2]
-    weight_decay = getattr(optim_cfg, 'weight_decay', 0.0)
-    optim_cfg.weight_decay = .0
+    weight_decay = float(optim_cfg.get("weight_decay", 0.0))
+    optim_cfg["weight_decay"] = .0
     optim_groups = [
         { 'params': decay_params, 'weight_decay': weight_decay },
         { 'params': no_decay_params, 'weight_decay': 0.0 },
