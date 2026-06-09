@@ -3,14 +3,16 @@ Minimal Vision Transformer (ViT) implementation in PyTorch.
 - Includes patch embedding, multi-head self-attention, MLP blocks, stochastic depth, and optimizer configuration.
 """
 
+import warnings
+from dataclasses import dataclass
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import warnings
-from dataclasses import dataclass
 from einops.layers.torch import Rearrange
-from hydra.utils import instantiate
 from omegaconf import DictConfig
+
+from .utils import _configure_optimizer
 
 
 @dataclass
@@ -65,7 +67,7 @@ class PatchEmbed(nn.Module):
         in_dim: int,
         out_dim: int,
         norm_lyr: type[nn.Module] | None = nn.Identity,
-    ):
+    ) -> None:
         """Initialize the patch embedding projection.
 
         Returns:
@@ -78,7 +80,7 @@ class PatchEmbed(nn.Module):
         norm_factory = nn.Identity if norm_lyr is None else norm_lyr
         self.norm = norm_factory(out_dim)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Project an image batch into patch tokens.
 
         Returns:
@@ -100,7 +102,7 @@ class MLP(nn.Module):
         out_features: int,
         act_fn: type[nn.Module] = nn.GELU,
         drop_rate: float = 0.0,
-    ):
+    ) -> None:
         """Initialize the two-layer feed-forward block.
 
         Returns:
@@ -112,7 +114,7 @@ class MLP(nn.Module):
         self.fc2 = nn.Linear(hidden_features, out_features)
         self.drop = nn.Dropout(drop_rate)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Apply the feed-forward block to token embeddings.
 
         Returns:
@@ -136,7 +138,7 @@ class MultiHeadSelfAttention(nn.Module):
         attn_drop_rate: float = 0.0,
         proj_drop_rate: float = 0.0,
         use_sdpa_attn: bool = True,
-    ):
+    ) -> None:
         """Initialize the self-attention projection stack.
 
         Returns:
@@ -159,7 +161,7 @@ class MultiHeadSelfAttention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop_rate)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Apply self-attention over the token sequence.
 
         Returns:
@@ -186,7 +188,7 @@ class StochDepthDrop(nn.Module):
     Paper: https://arxiv.org/pdf/1603.09382
     """
 
-    def __init__(self, drop_prob: float):
+    def __init__(self, drop_prob: float) -> None:
         """Initialize the stochastic depth module.
 
         Returns:
@@ -195,7 +197,7 @@ class StochDepthDrop(nn.Module):
         super().__init__()
         self.drop_prob = drop_prob
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Randomly drop residual branches during training.
 
         Returns:
@@ -211,7 +213,7 @@ class StochDepthDrop(nn.Module):
         return out
 
 
-class Block(nn.Module):
+class ViTBlock(nn.Module):
     """Transformer encoder block with attention and MLP sublayers."""
 
     def __init__(
@@ -224,7 +226,8 @@ class Block(nn.Module):
         drop_path_prob: float,
         use_sdpa_attn: bool = True,
         mlp_drop_rate: float | None = None,
-    ):
+        act_fn: type[nn.Module] = nn.GELU,
+    ) -> None:
         """Initialize the encoder block.
 
         Returns:
@@ -241,11 +244,11 @@ class Block(nn.Module):
         )
         self.norm2 = nn.LayerNorm(dim)
         mlp_drop_rate = proj_drop_rate if mlp_drop_rate is None else mlp_drop_rate
-        self.mlp = MLP(dim, mlp_dim, dim, drop_rate=mlp_drop_rate)
+        self.mlp = MLP(dim, mlp_dim, dim, act_fn=act_fn, drop_rate=mlp_drop_rate)
         self.drop_path_attn = StochDepthDrop(drop_path_prob)
         self.drop_path_mlp = StochDepthDrop(drop_path_prob)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run one transformer block over the token sequence.
 
         Returns:
@@ -277,7 +280,7 @@ class ViT(nn.Module):
         self.pos_embed = nn.Parameter(torch.zeros(1, 1 + cfg.num_patches, cfg.n_embd))
         self.pos_drop = nn.Dropout(cfg.drop_rate)
         self.blocks = nn.ModuleList(
-            Block(
+            ViTBlock(
                 dim=cfg.n_embd,
                 n_heads=cfg.n_heads,
                 mlp_dim=cfg.mlp_dim,
@@ -297,7 +300,7 @@ class ViT(nn.Module):
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
 
     @staticmethod
-    def _init_weights(m):
+    def _init_weights(m: nn.Module) -> None:
         """Initialize supported module weights in place.
 
         Returns:
@@ -311,8 +314,12 @@ class ViT(nn.Module):
             nn.init.zeros_(m.bias)
             nn.init.ones_(m.weight)
 
-    def loss_fn(self, pred, lbls):
+    def loss_fn(self, pred: torch.Tensor, lbls: torch.Tensor) -> torch.Tensor:
         """Compute the classification loss for a batch.
+
+        Args:
+            pred: Class logits with shape ``(B, n_class)``.
+            lbls: Target class indices with shape ``(B,)``.
 
         Returns:
             torch.Tensor: Scalar cross-entropy loss.
@@ -320,8 +327,14 @@ class ViT(nn.Module):
         loss = F.cross_entropy(pred, lbls)
         return loss
 
-    def forward(self, imgs, lbls=None):
+    def forward(
+        self, imgs: torch.Tensor, lbls: torch.Tensor | None = None
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         """Run the model and optionally compute loss.
+
+        Args:
+            imgs: Input image tensor with shape ``(B, C, H, W)``.
+            lbls: Optional class indices with shape ``(B,)``.
 
         Returns:
             torch.Tensor | tuple[torch.Tensor, torch.Tensor]: Logits, or logits with loss when labels are provided.
@@ -344,35 +357,12 @@ class ViT(nn.Module):
             return logits, loss
         return logits
 
-    def configure_optimizer(self, optim_cfg: DictConfig, device: torch.device):
+    def configure_optimizer(
+        self, optim_cfg: DictConfig, device: torch.device
+    ) -> torch.optim.Optimizer:
         """Create the optimizer configured for this model.
 
         Returns:
             torch.optim.Optimizer: Optimizer instance with decay groups applied.
         """
         return _configure_optimizer(self, optim_cfg, device)
-
-
-def _configure_optimizer(model: nn.Module, optim_cfg: DictConfig, device: torch.device):
-    """Build optimizer parameter groups with weight-decay filtering.
-
-    Returns:
-        torch.optim.Optimizer: Instantiated optimizer for the model parameters.
-    """
-    optim_cfg["fused"] = bool(optim_cfg.get("fused", False)) and device.type == "cuda"
-    params_dict = {pn: p for pn, p in model.named_parameters()}
-    params_dict = {
-        pn: p for pn, p in params_dict.items() if p.requires_grad
-    }  # filter params that requires grad
-    # create optim groups of any params that is 2D or more. This group will be weight decayed ie weight tensors in Linear and embeddings
-    decay_params = [p for p in params_dict.values() if p.dim() >= 2]
-    # create optim groups of any params that is 1D. All biases and layernorm params
-    no_decay_params = [p for p in params_dict.values() if p.dim() < 2]
-    weight_decay = float(optim_cfg.get("weight_decay", 0.0))
-    optim_cfg["weight_decay"] = 0.0
-    optim_groups = [
-        {"params": decay_params, "weight_decay": weight_decay},
-        {"params": no_decay_params, "weight_decay": 0.0},
-    ]
-    optimizer = instantiate(optim_cfg, params=optim_groups, _convert_="all")
-    return optimizer

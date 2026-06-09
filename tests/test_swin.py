@@ -6,7 +6,6 @@ from pathlib import Path
 from omegaconf import OmegaConf
 import pytest
 import torch
-import torch.nn as nn
 
 model_map = {
     "Swin-B": swin_b,
@@ -30,27 +29,26 @@ def test_swin_output_format():
     assert out.shape == (2, 1000), f"Output mismatch {out.shape}"
 
 
-def test_swin_param_match():
+@pytest.mark.parametrize("yml_file", yml_files)
+def test_swin_param_match(yml_file):
     """Check that parameter counts match torchvision reference models.
 
     Returns:
         None: Asserts parity for each configured model variant.
     """
-    # Test all available Swin models from `torchvision.models`
-    for yml_file in yml_files:
-        cfg = OmegaConf.load(yml_file)
-        cfg.img_size = 224
-        cfg.img_chls = 3
-        cfg.n_class = 1000
-        name = cfg.name
-        kwargs = dict(cfg)
-        if name not in model_map:
-            continue
-        pt_model = model_map[name]()
-        pt_params = sum(p.numel() for p in pt_model.parameters())
-        my_model = SwinTransformer(SwinTransformerConfig(**kwargs))
-        my_params = sum(p.numel() for p in my_model.parameters())
-        assert pt_params == my_params, f"{name} params mismatch {pt_params=} {my_params=}"
+    cfg = OmegaConf.load(yml_file)
+    cfg.img_size = 224
+    cfg.img_chls = 3
+    cfg.n_class = 1000
+    name = cfg.name
+    kwargs = dict(cfg)
+    if name not in model_map:
+        pytest.skip(f"No torchvision mapping found for {name}")
+    pt_model = model_map[name]()
+    pt_params = sum(p.numel() for p in pt_model.parameters())
+    my_model = SwinTransformer(SwinTransformerConfig(**kwargs))
+    my_params = sum(p.numel() for p in my_model.parameters())
+    assert pt_params == my_params, f"{name} params mismatch {pt_params=} {my_params=}"
 
 
 # There are architectural differences between my implementation and torchvision, so I decided not to test this.
@@ -124,29 +122,29 @@ def test_swin_param_match():
 
 
 @torch.no_grad()
-def test_swin_sdpa_attn():
+@pytest.mark.parametrize("yml_file", yml_files)
+def test_swin_sdpa_attn(yml_file):
     """Verify SDPA and fallback attention implementations agree.
 
     Returns:
         None: Asserts the two attention paths produce matching outputs.
     """
-    for yml_file in yml_files:
-        cfg = OmegaConf.load(yml_file)
-        cfg.img_size = 224
-        cfg.img_chls = 3
-        cfg.n_class = 1000
-        name = cfg.name
-        kwargs = dict(cfg)
-        if name not in model_map:
-            continue
-        model = SwinTransformer(SwinTransformerConfig(**kwargs), use_sdpa_attn=False)
-        sdpa_model = SwinTransformer(SwinTransformerConfig(**kwargs), use_sdpa_attn=True)
-        model.eval()
-        sdpa_model.eval()
-        sdpa_model.load_state_dict(model.state_dict())
+    cfg = OmegaConf.load(yml_file)
+    cfg.img_size = 224
+    cfg.img_chls = 3
+    cfg.n_class = 1000
+    name = cfg.name
+    kwargs = dict(cfg)
+    if name not in model_map:
+        pytest.skip(f"No torchvision mapping found for {name}")
+    model = SwinTransformer(SwinTransformerConfig(**kwargs), use_sdpa_attn=False)
+    sdpa_model = SwinTransformer(SwinTransformerConfig(**kwargs), use_sdpa_attn=True)
+    model.eval()
+    sdpa_model.eval()
+    sdpa_model.load_state_dict(model.state_dict())
 
-        x = torch.randn(2, 3, 224, 224)
-        y = model(x)
-        y_sdpa = sdpa_model(x)
-        max_diff = (y_sdpa - y).abs().max().item()
-        assert torch.allclose(y, y_sdpa, atol=1e-5, rtol=1e-5), f"Not bit-matching! {max_diff}"
+    x = torch.randn(2, 3, 224, 224)
+    y = model(x)
+    y_sdpa = sdpa_model(x)
+    max_diff = (y_sdpa - y).abs().max().item()
+    assert torch.allclose(y, y_sdpa, atol=1e-5, rtol=1e-5), f"Not bit-matching! {max_diff}"

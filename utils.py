@@ -173,6 +173,7 @@ def timer(func: Callable[P, T]) -> Callable[P, tuple[float, T]]:
     Returns:
         Callable[P, tuple[float, T]]: Decorated function returning elapsed seconds and result.
     """
+
     @wraps(func)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> tuple[float, T]:
         """Execute the wrapped callable and measure elapsed wall time.

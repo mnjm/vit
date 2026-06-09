@@ -1,17 +1,17 @@
 """Swin Transformer building blocks and classifier implementation."""
 
-from collections.abc import Sequence
+import warnings
 from dataclasses import dataclass, field
-from omegaconf import DictConfig
+
 import torch
 import torch.nn.functional as F
-import warnings
-from torch import nn
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
-from .vit import MLP, PatchEmbed, StochDepthDrop, _configure_optimizer
+from omegaconf import DictConfig
+from torch import nn
 
-type Size2D = tuple[int, int]
+from .utils import Size2D, _configure_optimizer, to_2tuple
+from .vit import MLP, PatchEmbed, StochDepthDrop
 
 
 @dataclass
@@ -49,18 +49,6 @@ class SwinTransformerConfig:
     drop_rate: float = 0.0
     attn_drop_rate: float = 0.0
     stoch_depth_drop_rate: float = 0.0
-
-
-def to_2tuple(x: int | Sequence[int]) -> Size2D:
-    """Normalize an integer or length-2 sequence to a 2D tuple.
-
-    Returns:
-        Size2D: Two-element size tuple.
-    """
-    if isinstance(x, Sequence):
-        assert len(x) == 2, f"Expected a pair, got {x}"
-        return int(x[0]), int(x[1])
-    return x, x
 
 
 def window_partition(x: torch.Tensor, window_size: int | Size2D) -> torch.Tensor:
@@ -378,7 +366,9 @@ class SwinTransformerBlock(nn.Module):
 class PatchMerge(nn.Module):
     """Patch merging layer (downsampling)."""
 
-    def __init__(self, dim: int, input_res: int | Size2D, norm_lyr: type[nn.Module] = nn.LayerNorm):
+    def __init__(
+        self, dim: int, input_res: int | Size2D, norm_lyr: type[nn.Module] = nn.LayerNorm
+    ) -> None:
         """
         Args:
             dim: Input embedding dim.
@@ -457,17 +447,17 @@ class SwinLayer(nn.Module):
                 input_res=self.input_res,
                 n_heads=n_heads,
                 window_size=window_size_2d,
-                shift_size=0 if (l % 2 == 0) else window_size_2d[0] // 2,
+                shift_size=0 if (idx % 2 == 0) else window_size_2d[0] // 2,
                 mlp_ratio=mlp_ratio,
                 proj_drop_rate=proj_drop_rate,
                 attn_drop_rate=attn_drop_rate,
-                path_drop_rate=path_drop_rate[l]
+                path_drop_rate=path_drop_rate[idx]
                 if isinstance(path_drop_rate, list)
                 else path_drop_rate,
                 norm_layer=norm_layer,
                 use_sdpa_attn=use_sdpa_attn,
             )
-            for l in range(depth)
+            for idx in range(depth)
         )
 
         if downsample:
@@ -493,8 +483,12 @@ class SwinLayer(nn.Module):
 class SwinTransformer(nn.Module):
     """Swin Transformer"""
 
-    def __init__(self, cfg: SwinTransformerConfig, use_sdpa_attn: bool = True):
+    def __init__(self, cfg: SwinTransformerConfig, use_sdpa_attn: bool = True) -> None:
         """Initialize the Swin Transformer backbone and classifier head.
+
+        Args:
+            cfg: Swin Transformer model configuration.
+            use_sdpa_attn: Whether to use SDPA attention when available.
 
         Returns:
             None: This initializer does not return a value.
@@ -521,21 +515,21 @@ class SwinTransformer(nn.Module):
 
         self.layers = nn.ModuleList(
             SwinLayer(
-                dim=int(cfg.n_embed * 2**l),
-                input_res=(patches_res[0] // (2**l), patches_res[1] // (2**l)),
-                depth=cfg.depths[l],
-                n_heads=cfg.n_heads[l],
+                dim=int(cfg.n_embed * 2**idx),
+                input_res=(patches_res[0] // (2**idx), patches_res[1] // (2**idx)),
+                depth=cfg.depths[idx],
+                n_heads=cfg.n_heads[idx],
                 window_size=cfg.window_size,
                 mlp_ratio=cfg.mlp_ratio,
                 proj_drop_rate=cfg.drop_rate,
                 attn_drop_rate=cfg.attn_drop_rate,
-                downsample=(l < self.n_layers - 1),
+                downsample=(idx < self.n_layers - 1),
                 path_drop_rate=stoch_depth_drop_rates[
-                    sum(cfg.depths[:l]) : sum(cfg.depths[: l + 1])
+                    sum(cfg.depths[:idx]) : sum(cfg.depths[: idx + 1])
                 ],
                 use_sdpa_attn=use_sdpa_attn,
             )
-            for l in range(self.n_layers)
+            for idx in range(self.n_layers)
         )
 
         self.n_features = int(cfg.n_embed * 2 ** (self.n_layers - 1))
@@ -571,8 +565,14 @@ class SwinTransformer(nn.Module):
         """
         return F.cross_entropy(x, y, weight=weight, label_smoothing=label_smoothing)
 
-    def forward(self, x: torch.Tensor, y: torch.Tensor | None = None):
+    def forward(
+        self, x: torch.Tensor, y: torch.Tensor | None = None
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         """Run the Swin model and optionally compute loss.
+
+        Args:
+            x: Input image tensor with shape ``(B, C, H, W)``.
+            y: Optional class indices with shape ``(B,)``.
 
         Returns:
             torch.Tensor | tuple[torch.Tensor, torch.Tensor]: Logits, or logits with loss when labels are provided.
@@ -590,8 +590,14 @@ class SwinTransformer(nn.Module):
             return x, loss
         return x
 
-    def configure_optimizer(self, optim_cfg: DictConfig, device: torch.device):
+    def configure_optimizer(
+        self, optim_cfg: DictConfig, device: torch.device
+    ) -> torch.optim.Optimizer:
         """Create the optimizer configured for this model.
+
+        Args:
+            optim_cfg: Optimizer configuration.
+            device: Target device for optimizer state placement.
 
         Returns:
             torch.optim.Optimizer: Optimizer instance with decay groups applied.

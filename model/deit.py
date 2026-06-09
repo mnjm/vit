@@ -21,8 +21,12 @@ class DeitConfig(ViTConfig):
 class DeiT(ViT):
     """DeiT model with distillation token and head."""
 
-    def __init__(self, cfg, use_sdpa_attn=True):
+    def __init__(self, cfg: DeitConfig, use_sdpa_attn: bool = True) -> None:
         """Initialize the DeiT student model and distillation head.
+
+        Args:
+            cfg: DeiT model configuration.
+            use_sdpa_attn: Whether to use SDPA attention when available.
 
         Returns:
             None: This initializer does not return a value.
@@ -49,8 +53,11 @@ class DeiT(ViT):
 
             self.teacher = None
 
-    def set_teacher(self, teacher: nn.Module):
+    def set_teacher(self, teacher: nn.Module) -> None:
         """Attach a frozen teacher model used for distillation.
+
+        Args:
+            teacher: Teacher model used to generate hard distillation targets.
 
         Returns:
             None: Stores the teacher model on the instance.
@@ -59,13 +66,20 @@ class DeiT(ViT):
         teacher.eval()
         self.teacher = teacher
 
-    def loss_fn(self, pred, lbls, imgs=None, weight=0.5):
+    def loss_fn(
+        self,
+        pred: torch.Tensor | tuple[torch.Tensor, torch.Tensor],
+        lbls: torch.Tensor,
+        imgs: torch.Tensor | None = None,
+        weight: float = 0.5,
+    ) -> torch.Tensor:
         """Deit loss.
+
         Args:
-           pred: Logits or (cls_logits, dist_logits).
-           lbls: Ground-truth labels.
-           imgs: Input images for teacher.
-           weight: Distillation loss weight.
+            pred: Logits tensor or ``(cls_logits, dist_logits)`` tuple.
+            lbls: Ground-truth class indices.
+            imgs: Input images used by the teacher when distilling.
+            weight: Distillation loss weight.
 
         Returns:
             torch.Tensor: Scalar loss for the current batch.
@@ -94,8 +108,14 @@ class DeiT(ViT):
             loss = F.cross_entropy(pred, lbls)
         return loss
 
-    def forward(self, imgs, lbls=None):
+    def forward(
+        self, imgs: torch.Tensor, lbls: torch.Tensor | None = None
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         """Run DeiT inference and optionally compute distillation loss.
+
+        Args:
+            imgs: Input image tensor with shape ``(B, C, H, W)``.
+            lbls: Optional class indices with shape ``(B,)``.
 
         Returns:
             torch.Tensor | tuple[torch.Tensor, torch.Tensor]: Logits, or logits with loss when labels are provided.

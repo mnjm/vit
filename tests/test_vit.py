@@ -30,27 +30,26 @@ def test_vit_output_format():
     assert out.shape == (2, 1000), f"Output mismatch {out.shape}"
 
 
-def test_param_count_vit():
+@pytest.mark.parametrize("yml_file", yml_files)
+def test_param_count_vit(yml_file):
     """Check that parameter counts match torchvision reference models.
 
     Returns:
         None: Asserts parity for each configured model variant.
     """
-    # Test all available vit models from `torchvision.models`
-    for yml_file in yml_files:
-        cfg = OmegaConf.load(yml_file)
-        cfg.img_size = 224
-        cfg.img_chls = 3
-        cfg.n_class = 1000
-        name = cfg.name
-        kwargs = dict(cfg)
-        if name not in model_map:
-            continue
-        pt_model = model_map[name]()
-        pt_params = sum(p.numel() for p in pt_model.parameters())
-        my_model = ViT(ViTConfig(**kwargs))
-        my_params = sum(p.numel() for p in my_model.parameters())
-        assert pt_params == my_params, f"{name} params mismatch {pt_params=} {my_params=}"
+    cfg = OmegaConf.load(yml_file)
+    cfg.img_size = 224
+    cfg.img_chls = 3
+    cfg.n_class = 1000
+    name = cfg.name
+    kwargs = dict(cfg)
+    if name not in model_map:
+        pytest.skip(f"No torchvision mapping found for {name}")
+    pt_model = model_map[name]()
+    pt_params = sum(p.numel() for p in pt_model.parameters())
+    my_model = ViT(ViTConfig(**kwargs))
+    my_params = sum(p.numel() for p in my_model.parameters())
+    assert pt_params == my_params, f"{name} params mismatch {pt_params=} {my_params=}"
 
 
 def load_weights_from_tv(my_model, tv_model):
@@ -92,30 +91,30 @@ def load_weights_from_tv(my_model, tv_model):
 
 
 @torch.no_grad()
-def test_bit_match_output_with_tv():
+@pytest.mark.parametrize("yml_file", yml_files)
+def test_bit_match_output_with_tv(yml_file):
     """Verify output parity after copying torchvision weights.
 
     Returns:
         None: Asserts the outputs match within tolerance.
     """
-    for yml_file in yml_files:
-        cfg = OmegaConf.load(yml_file)
-        cfg.img_size = 224
-        cfg.img_chls = 3
-        cfg.n_class = 1000
-        name = cfg.name
-        kwargs = dict(cfg)
-        if name not in model_map:
-            continue
-        tv_model = model_map[name]()
-        my_model = ViT(ViTConfig(**kwargs))
-        tv_model.eval()
-        my_model.eval()
-        load_weights_from_tv(my_model, tv_model)
+    cfg = OmegaConf.load(yml_file)
+    cfg.img_size = 224
+    cfg.img_chls = 3
+    cfg.n_class = 1000
+    name = cfg.name
+    kwargs = dict(cfg)
+    if name not in model_map:
+        pytest.skip(f"No torchvision mapping found for {name}")
+    tv_model = model_map[name]()
+    my_model = ViT(ViTConfig(**kwargs))
+    tv_model.eval()
+    my_model.eval()
+    load_weights_from_tv(my_model, tv_model)
 
-        x = torch.randn(2, 3, 224, 224)
+    x = torch.randn(2, 3, 224, 224)
 
-        y_tv = tv_model(x)
-        y_my = my_model(x)
+    y_tv = tv_model(x)
+    y_my = my_model(x)
 
-        assert torch.allclose(y_tv, y_my, atol=1e-5, rtol=1e-5), "NOT bit-matching!"
+    assert torch.allclose(y_tv, y_my, atol=1e-5, rtol=1e-5), "NOT bit-matching!"

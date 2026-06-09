@@ -1,4 +1,4 @@
-"""Training entrypoint for ViT, DeiT, and Swin experiments driven by Hydra."""
+"""Training entrypoint for ViT, DeiT, Swin and MobileViT experiments driven by Hydra."""
 
 import logging
 from contextlib import nullcontext

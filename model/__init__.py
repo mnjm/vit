@@ -1,35 +1,42 @@
 """Model factory helpers for ViT, DeiT, and Swin variants."""
 
 import logging
-import torch
+
 import detectors  # noqa: F401
 import timm
+import torch
 from omegaconf import DictConfig
-from .vit import ViTConfig, ViT
-from .deit import DeitConfig, DeiT
+
+from .deit import DeiT, DeitConfig
+from .mobilevit import MobileViT, MobileViTConfig
 from .swin import SwinTransformer, SwinTransformerConfig
+from .vit import ViT, ViTConfig
 
 
-def init_model(cfg: DictConfig, device: torch.device) -> ViT | DeiT | SwinTransformer:
+def init_model(cfg: DictConfig, device: torch.device) -> ViT | DeiT | SwinTransformer | MobileViT:
     """Instantiate the configured model family for the target device.
 
     Returns:
         ViT | DeiT | SwinTransformer: Initialized model instance.
     """
     name = cfg.model.name
-    use_sdpa_attn = device.type != "mps"
-    if name.startswith("DeiT"):
+    if name.startswith("ViT"):
+        model_cfg = ViTConfig(**cfg.model)
+        model = ViT(model_cfg)
+    elif name.startswith("DeiT"):
         assert getattr(cfg.model, "use_dist_token", False), (
             "Enable use_dist_token in DeiT model config"
         )
         model_cfg = DeitConfig(**cfg.model)
-        model = DeiT(model_cfg, use_sdpa_attn=use_sdpa_attn)
+        model = DeiT(model_cfg)
     elif name.startswith("Swin"):
         model_cfg = SwinTransformerConfig(**cfg.model)
-        model = SwinTransformer(model_cfg, use_sdpa_attn=use_sdpa_attn)
+        model = SwinTransformer(model_cfg)
+    elif name.startswith("MobileViT"):
+        model_cfg = MobileViTConfig(**cfg.model)
+        model = MobileViT(model_cfg)
     else:
-        model_cfg = ViTConfig(**cfg.model)
-        model = ViT(model_cfg, use_sdpa_attn=use_sdpa_attn)
+        raise ValueError(f"Unsupported model name: {name}")
     return model
 
 
