@@ -114,57 +114,36 @@ def cosine_with_linear_warmup_lr_scheduler(
     return LambdaLR(optimizer, lr_lambda)
 
 
-@torch.no_grad()
-def calc_accuracy(output, target, topk=(1,)):
-    """Compute top-k accuracy scores for a batch of predictions.
+class ClassificationMetrics:
+    """Track classification loss, top-1 and top-5 accuracy across batches."""
 
-    Returns:
-        list[torch.Tensor]: Accuracy tensors in the same order as ``topk``.
-    """
-    maxk = max(topk)
-    batch_size = target.size(0)
-    _, pred = output.topk(maxk, 1, True, True)
-    pred = pred.t()
-    correct = pred.eq(target.view(1, -1).expand_as(pred))
-    res = []
-    for k in topk:
-        correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
-        res.append(correct_k.mul_(1.0 / batch_size))
-    return res
-
-
-class AverageMetric:
-    """Track the running average of a scalar metric."""
-
-    def __init__(self):
-        """Initialize an empty running metric.
-
-        Returns:
-            None: This initializer does not return a value.
-        """
+    def __init__(self) -> None:
         self.reset()
 
-    def reset(self):
-        """Reset the metric state to zero.
+    def reset(self) -> None:
+        self.total_loss = 0.0
+        self.total_correct1 = 0
+        self.total_correct5 = 0
+        self.total_samples = 0
 
-        Returns:
-            None: Clears the accumulated statistics in place.
-        """
-        self.val = 0
-        self.avg = 0
-        self.sum = 0
-        self.count = 0
+    @torch.no_grad()
+    def update(self, logits: torch.Tensor, targets: torch.Tensor, loss: torch.Tensor) -> None:
+        batch_size = targets.size(0)
+        self.total_loss += loss.item() * batch_size
+        self.total_samples += batch_size
+        _, pred = logits.topk(5, dim=1, largest=True, sorted=True)
+        pred = pred.t()
+        correct = pred.eq(targets.view(1, -1).expand_as(pred))
+        self.total_correct1 += correct[:1].reshape(-1).float().sum().item()
+        self.total_correct5 += correct[:5].reshape(-1).float().sum().item()
 
-    def update(self, val, n=1):
-        """Update the metric with a new value and sample count.
-
-        Returns:
-            None: Updates the running statistics in place.
-        """
-        self.val = val
-        self.sum += val * n
-        self.count += n
-        self.avg = self.sum / self.count if self.count > 0 else 0
+    def compute(self) -> dict[str, float]:
+        n = max(self.total_samples, 1)
+        return {
+            "loss": self.total_loss / n,
+            "acc@1": self.total_correct1 / n,
+            "acc@5": self.total_correct5 / n,
+        }
 
 
 def timer(func: Callable[P, T]) -> Callable[P, tuple[float, T]]:

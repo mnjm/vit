@@ -1,4 +1,4 @@
-"""Training entrypoint for ViT, DeiT, Swin and MobileViT experiments driven by Hydra."""
+"""Training entrypoint for ViT, DeiT, Swin and MobileViT experiments"""
 
 import logging
 from contextlib import nullcontext
@@ -13,9 +13,8 @@ from tqdm.auto import tqdm
 from data import init_dataloaders, show_batch
 from model import init_deit, init_model
 from utils import (
-    AverageMetric,
+    ClassificationMetrics,
     WandBLogger,
-    calc_accuracy,
     cosine_with_linear_warmup_lr_scheduler,
     get_ist_time_now,
     timer,
@@ -69,13 +68,12 @@ def main(cfg: DictConfig) -> None:
     logger.info(
         f"Model type: {cfg.model.name} params: {sum(p.numel() for p in model.parameters()):,}"
     )
-    runtime_model = model
     if cfg.torch_compile:
-        runtime_model = torch.compile(model)
-        assert isinstance(runtime_model, torch.nn.Module)
+        model = torch.compile(model)
+        assert isinstance(model, torch.nn.Module)
 
     # optimizer
-    optimizer = model.configure_optimizer(cfg.optimizer, device)
+    optimizer = model.configure_optimizer(cfg.optimizer, device)  # pyright: ignore[reportCallIssue]
     lr_scheduler = None
     if cfg.lr_scheduler is not None:
         if cfg.lr_scheduler.name == "cosine-with-linear-warmup":
@@ -115,14 +113,9 @@ def main(cfg: DictConfig) -> None:
     )
 
     @timer
-    def train_epoch():
-        """Execute one full training epoch.
-
-        Returns:
-            tuple[float, float, float]: Average loss, top-1 accuracy, and top-5 accuracy.
-        """
-        runtime_model.train()
-        loss, acc1, acc5 = AverageMetric(), AverageMetric(), AverageMetric()
+    def train_epoch() -> dict:
+        model.train()
+        metrics = ClassificationMetrics()
         progress_bar = tqdm(
             train_dataloader,
             dynamic_ncols=True,
@@ -132,43 +125,26 @@ def main(cfg: DictConfig) -> None:
         )
         for batch in progress_bar:
             imgs, lbls = batch[0].to(device), batch[1].to(device)
-
             optimizer.zero_grad(set_to_none=True)
             with autocast_ctx:
-                pred, loss_i = runtime_model(imgs, lbls)
+                pred, loss_i = model(imgs, lbls)
             loss_i.backward()
             if cfg.clip_grad_norm_1:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             if lr_scheduler is not None:
                 lr_scheduler.step()
-
-            acc1_i, acc5_i = calc_accuracy(pred, lbls, (1, 5))
-            batch_size = lbls.size(0)
-            loss.update(loss_i.item(), batch_size)
-            acc1.update(acc1_i.item(), batch_size)
-            acc5.update(acc5_i.item(), batch_size)
-            progress_bar.set_postfix(
-                {
-                    "loss": f"{loss_i.item():.4f}",
-                    "acc@1": f"{acc1_i.item():.2%}",
-                    "acc@5": f"{acc5_i.item():.2%}",
-                }
-            )
-
+            metrics.update(pred, lbls, loss_i)
         progress_bar.close()
         if device.type == "cuda":
             torch.cuda.synchronize()
-        return loss.avg, acc1.avg, acc5.avg
+        return metrics.compute()
 
     @timer
     @torch.no_grad()
-    def val_epoch():
-        """Execute one validation epoch.
-
-        Returns:
-            tuple[float, float, float]: Average loss, top-1 accuracy, and top-5 accuracy.
-        """
+    def val_epoch() -> dict:
+        model.eval()
+        metrics = ClassificationMetrics()
         progress_bar = tqdm(
             val_dataloader,
             dynamic_ncols=True,
@@ -176,60 +152,41 @@ def main(cfg: DictConfig) -> None:
             leave=False,
             disable=(not cfg.interactive),
         )
-
-        runtime_model.eval()
-        loss, acc1, acc5 = AverageMetric(), AverageMetric(), AverageMetric()
         for batch in progress_bar:
             imgs, lbls = batch[0].to(device), batch[1].to(device)
-
             with autocast_ctx:
-                pred, loss_i = runtime_model(imgs, lbls)
-
-            acc1_i, acc5_i = calc_accuracy(pred, lbls, (1, 5))
-            batch_size = lbls.size(0)
-            loss.update(loss_i.item(), batch_size)
-            acc1.update(acc1_i.item(), batch_size)
-            acc5.update(acc5_i.item(), batch_size)
-            progress_bar.set_postfix(
-                {
-                    "loss": f"{loss_i.item():.4f}",
-                    "acc@1": f"{acc1_i.item():.2%}",
-                    "acc@5": f"{acc5_i.item():.2%}",
-                }
-            )
-
+                pred, loss_i = model(imgs, lbls)
+            metrics.update(pred, lbls, loss_i)
         progress_bar.close()
         if device.type == "cuda":
             torch.cuda.synchronize()
-        return loss.avg, acc1.avg, acc5.avg
+        return metrics.compute()
 
-    t, (loss, acc1, acc5) = val_epoch()
-    logger.info(f"Initial Val Loss: {loss:.4f} Acc@1: {acc1:.2%} Acc@5: {acc5:.2%} Time: {t:.2f}s")
-    wb_logger.log(
-        "val", {"epoch": start_epoch - 1, "loss": loss, "acc@1": acc1, "acc@5": acc5, "time": t}
+    t, stats = val_epoch()
+    logger.info(
+        "Initial Val " + " ".join(f"{k}={v:.4f}" for k, v in stats.items()) + f" Time={t:.2f}s"
     )
+    wb_logger.log("val", {"epoch": start_epoch - 1, **stats, "time": t})
     for epoch in range(start_epoch, cfg.n_epochs + 1):
         last_epoch = epoch == cfg.n_epochs
         logger.info(f"Epoch: {epoch}/{cfg.n_epochs}")
 
-        # Train
-        t, (loss, acc1, acc5) = train_epoch()
+        t, stats = train_epoch()
         logger.info(
-            f"{'Train':<5} Loss: {loss:.4f} Acc@1: {acc1:.2%} Acc@5: {acc5:.2%} Time: {t:.2f}s"
+            f"{'Train':<5} "
+            + " ".join(f"{k}={v:.4f}" for k, v in stats.items())
+            + f" Time={t:.2f}s"
         )
-        wb_logger.log(
-            "train", {"epoch": epoch, "loss": loss, "acc@1": acc1, "acc@5": acc5, "time": t}
-        )
+        wb_logger.log("train", {"epoch": epoch, **stats, "time": t})
 
-        # Val
         if last_epoch or epoch % cfg.val_every_epoch == 0:
-            t, (loss, acc1, acc5) = val_epoch()
+            t, stats = val_epoch()
             logger.info(
-                f"{'Val':<5} Loss: {loss:.4f} Acc@1: {acc1:.2%} Acc@5: {acc5:.2%} Time: {t:.2f}s"
+                f"{'Val':<5} "
+                + " ".join(f"{k}={v:.4f}" for k, v in stats.items())
+                + f" Time={t:.2f}s"
             )
-            wb_logger.log(
-                "val", {"epoch": epoch, "loss": loss, "acc@1": acc1, "acc@5": acc5, "time": t}
-            )
+            wb_logger.log("val", {"epoch": epoch, **stats, "time": t})
 
         # Ckpt
         if last_epoch or epoch % cfg.save_every_epoch == 0:
