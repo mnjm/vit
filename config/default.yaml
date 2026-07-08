@@ -17,11 +17,15 @@ torch_compile: true
 enable_tf32: true
 clip_grad_norm_1: true
 autocast_dtype: bf16
+
+wandb: false
+
 dataloader:
   batch_size: 256
   num_workers: 4
   pin_memory: true
   drop_last: true
+
 optimizer:
   _target_: torch.optim.AdamW
   lr: 3e-4
@@ -29,6 +33,7 @@ optimizer:
   weight_decay: 0.1
   eps: 1e-8
   fused: true
+
 lr_scheduler:
   name: cosine-with-linear-warmup
   min_lr_pct: 0.1
@@ -42,7 +47,7 @@ deit:
 logging:
   log_dir: ./logs
   wandb:
-    enable: false
+    enable: ${wandb}
     project: vit
 
 hydra:

@@ -1,70 +1,65 @@
 # Vision Transformers (ViT)
 
-A minimal PyTorch implementation of [Vision Transformers(ViT)](https://arxiv.org/pdf/2010.11929), its varients [Data efficient Image Transformers (DeiT)](https://arxiv.org/pdf/2012.12877), [Swin Transformers](https://arxiv.org/pdf/2103.14030) and [MobileViT](https://arxiv.org/pdf/2110.02178).  and Tiny-Imagenet dataset with a (ViT-16L-384D/8 vs Swin-T vs MobileViT-XXS), Experimented with CIFAR-100 (ViT-T/8 vs DeiT-T/8) but supports other varients as well.
+A minimal PyTorch implementation of [Vision Transformer (ViT)](https://arxiv.org/pdf/2010.11929), its variants [Data-efficient Image Transformers (DeiT)](https://arxiv.org/pdf/2012.12877), [Swin Transformer](https://arxiv.org/pdf/2103.14030), and [MobileViT](https://arxiv.org/pdf/2110.02178). Pretraining experiments were conducted on the Food101 dataset.
 
 Architectural correctness is tested via parameter counts and output parity, matched against torchvision implementations (with exceptions for Swin due to differing internal choices).
 
 Configuration is managed using Hydra, with optional experiment tracking via Weights & Biases (wandb).
 
+## Findings
 
-## ViT-16L-384D/8 vs Swin-T vs MobileViT-XXS on TinyImageNet
+The objective was to observe the training behavior when using the same pretraining recipe across different popular ViT variants. The dataset used was [Food101](https://huggingface.co/datasets/ethz/food101). The training config is [here](./config/default.yaml).
 
-![Tiny Image Net Plots](https://raw.githubusercontent.com/mnjm/vision-transformers/refs/heads/assets/train-plots-tiny-imagenet.png)
+![Food101 plot](https://raw.githubusercontent.com/mnjm/vision-transformers/refs/heads/assets/train-plots-food101.png)
 
-Findings
-- ViT-16L-384D/8 and Swin-T overfit early, as expected, since the dataset is small.
-- There is a slight improvement of Swin-T over ViT-16L-384D/8, as it borrows some inductive biases from CNNs.
-- MobileViT-XXS is underfitting / learning slowly because of:
-  1. its low parameter count
-  2. having a token count collapsed to 1 in most of the later ViT layers. MobileViT-XXS is not a good choice for 64×64 image classification tasks.
-
-## ViT-T/8 vs DeiT-T/8 on CIFAR-100
-
-![CIFAR-100 Plots](https://raw.githubusercontent.com/mnjm/vision-transformers/refs/heads/assets/train-plots-cifar100.png)
-
-Findings
-- DeiT-T/8 performs better than ViT-T/8 on CIFAR-100 as expected, as DeiT uses hard distillation from the frozen pretrained ResNet18 teacher to provide a richer context with some CNN inductive biases.
+- DeiT showed slightly better generalization than ViT, suggesting that distillation from a CNN is valuable.
+- Swin performed the best because of its CNN-like ideas: local computation with hierarchical connections.
+- MobileViT, while it underfit, had val metrics closer to its training metrics. This can likely be improved with slightly higher model capacity (XS).
 
 ## Setup
 
-- Install [uv](https://docs.astral.sh/uv/) and run
+- Install [uv](https://docs.astral.sh/uv/) and run:
+
 ```bash
 uv sync
 ```
 
-## Training Runs
-
-
-### Train ViT-16L-384D/8 on Tiny-Imagenet
+## Train
 
 ```bash
-uv run train.py +run=vit-tiny-imagenet
+uv run train.py +run=<run_name>
 ```
 
-### Train Swin-T on Tiny-Imagenet
+| Run | Dataset | Model |
+| --- | --- | --- |
+| `vit-food101` | Food-101 | `ViT-B-16` |
+| `deit-food101` | Food-101 | `DeiT-B-16` |
+| `swin-food101` | Food-101 | `Swin-T` |
+| `mobilevit-food101` | Food-101 | `MobileViT-XXS` |
+| `swin-tiny-imagenet` | Tiny-ImageNet | `Swin-T-TinyImageNet` |
+| `mobilevit-tiny-imagenet` | Tiny-ImageNet | `MobileViT-XXS` |
+| `vit-tiny-imagenet` | Tiny-ImageNet | `MobileVit-XXS` |
+| `vit-cifar100` | CIFAR-100 | `ViT-T-8` |
+| `deit-cifar100` | CIFAR-100 | `DeiT-T-8` |
+
+Run-specific configurations can be found [here](./config/run).
+
+## Hugging Face Checkpoints
+
+The following Food101 checkpoints are available on Hugging Face:
+
+- [`mnjm/vit-b16-food101`](https://huggingface.co/mnjm/vit-b16-food101)
+- [`mnjm/deit-b16-food101`](https://huggingface.co/mnjm/deit-b16-food101)
+- [`mnjm/swin-t-food101`](https://huggingface.co/mnjm/swin-t-food101)
+- [`mnjm/mobilevit-xxs-food101`](https://huggingface.co/mnjm/mobilevit-xxs-food101)
+
+## Compute Accuracy
+
+To compute train and validation loss and accuracy for a saved checkpoint, run:
 
 ```bash
-uv run train.py +run=swin-tiny-imagenet
+uv run compute_acc.py <checkpoint_file> [--device <device>]
 ```
-
-### Train MobileViT-XXS on Tiny-Imagenet
-
-```bash
-uv run train.py +run=mobilevit-tiny-imagenet
-```
-
-### Train ViT-T/8 on CIFAR-100
-
-```bash
-uv run train.py +run=vit-cifar100
-```
-
-### Train DeiT-T/8 on CIFAR-100
-
-```bash
-uv run train.py +run=deit-cifar100
-```
-Uses frozen `resnet18_cifar100` (via timm) as Teacher and is used for hard distillation (as it is showen to work well in DeiT paper)
 
 ## Structure
 
@@ -73,14 +68,13 @@ Uses frozen `resnet18_cifar100` (via timm) as Teacher and is used for hard disti
 ├── config/
 │   ├── dataset/        # Dataset configs
 │   ├── model/          # Model configs (ViT / DeiT / Swin)
-│   ├── run/            # Experiment presets
+│   ├── run/            # Run Experiment configs
 │   └── default.yaml    # Global defaults
 ├── model/              # Model implementations
 ├── data.py             # Dataset & dataloaders
 ├── train.py            # Training entry point
 ├── utils.py            # Training utilities
 └── tests/              # Architecture & parity tests
-
 ````
 
 ## Citations

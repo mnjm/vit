@@ -1,0 +1,8 @@
+# @package _global_
+defaults:
+  - override /dataset: food101
+  - override /model: DeiT-B-16
+
+deit:
+  enable: true
+  teacher_name: hf_hub:anonauthors/food101-resnet50

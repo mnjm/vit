@@ -1,11 +1,18 @@
 """Dataset loading and visualization helpers for training image models."""
 
 import math
+import warnings
 from pathlib import Path
+import matplotlib
+
+if not matplotlib.get_backend().lower().startswith("agg"):
+    matplotlib.use("Agg")
+
 import matplotlib.pyplot as plt
 import torch
 import torchvision.transforms.v2 as T
 from datasets import load_dataset
+from PIL import ImageFile
 from torch.utils.data import DataLoader, Dataset
 from torchvision import datasets
 
@@ -47,7 +54,7 @@ class HFDatasetWrapper(Dataset):
         return image, torch.tensor(label, dtype=torch.long)
 
 
-supported_dataset = ["oxford-flowers102", "tiny-imagenet", "cifar100"]
+supported_dataset = ["oxford-flowers102", "tiny-imagenet", "cifar100", "food101"]
 
 
 def init_dataloaders(cfg):
@@ -73,7 +80,7 @@ def init_dataloaders(cfg):
     elif getattr(ds_cfg.aug, "auto_augment", False):
         transforms.append(T.AutoAugment(T.AutoAugmentPolicy.IMAGENET))
 
-    resize = [T.Resize(ds_cfg.img_size)]
+    resize = [T.Resize(ds_cfg.img_size), T.CenterCrop(ds_cfg.img_size)]
     cast_scale = [
         T.ToImage(),
         T.ToDtype(torch.float32, scale=True),
@@ -91,6 +98,14 @@ def init_dataloaders(cfg):
         val_ds = datasets.CIFAR100(
             cache_dir / "val", train=False, download=True, transform=val_transforms
         )
+    elif ds_cfg.name == "food101":
+        # food101 ships some truncated images; load them instead of raising warning
+        ImageFile.LOAD_TRUNCATED_IMAGES = True
+        warnings.filterwarnings("ignore", message="Truncated File Read")
+        train_ds = load_dataset("ethz/food101", split="train", cache_dir=cache_dir)
+        val_ds = load_dataset("ethz/food101", split="validation", cache_dir=cache_dir)
+        train_ds = HFDatasetWrapper(train_ds, transform=train_transforms)
+        val_ds = HFDatasetWrapper(val_ds, transform=val_transforms)
     else:
         train_ds = load_dataset("Maysee/tiny-imagenet", split="train", cache_dir=cache_dir)
         val_ds = load_dataset("Maysee/tiny-imagenet", split="valid", cache_dir=cache_dir)

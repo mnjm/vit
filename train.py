@@ -68,6 +68,10 @@ def main(cfg: DictConfig) -> None:
     logger.info(
         f"Model type: {cfg.model.name} params: {sum(p.numel() for p in model.parameters()):,}"
     )
+
+    if hasattr(cfg, "deit") and getattr(cfg.deit, "enable", False):
+        init_deit(model, cfg, device, logger)
+
     if cfg.torch_compile:
         model = torch.compile(model)
         assert isinstance(model, torch.nn.Module)
@@ -99,9 +103,6 @@ def main(cfg: DictConfig) -> None:
         if device.type == "cuda" and torch_autocast_dtype == torch.bfloat16
         else nullcontext()
     )
-
-    if hasattr(cfg, "deit") and getattr(cfg.deit, "enable", False):  # init deit training if enabled
-        init_deit(model, cfg, device, logger)
 
     wb_logger = WandBLogger(
         project=cfg.logging.wandb.project,
